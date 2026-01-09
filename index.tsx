@@ -1,68 +1,167 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Modality } from '@google/genai';
 
-const loadingMessages = [
-  "Casting the digital actors...",
-  "Setting up the virtual cameras...",
-  "Rendering the first few frames...",
-  "This can take a few minutes...",
-  "Adding special effects and sound...",
-  "Almost there, polishing the final cut...",
+const loadingSteps = [
+  "Initializing Veo 3.1 model",
+  "Analyzing inputs & vectors",
+  "Synthesizing motion",
+  "Rendering video frames",
+  "Applying cinematic lighting",
+  "Finalizing output",
 ];
 
+const editingSteps = [
+  "Analyzing frame color space",
+  "Applying creative luts",
+  "Interpolating motion vectors",
+  "Finalizing edit",
+];
+
+interface HistoryItem {
+  prompt: string;
+  videoUrl: string;
+  timestamp: number;
+  config: string;
+}
+
+// Audio Decoding Helpers for TTS
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
 const VideoGeneratorApp = () => {
-  // Core State
+  // --- State ---
+  
+  // Inputs
   const [prompt, setPrompt] = useState<string>('');
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string>('');
-  const [lastGeneratedPrompt, setLastGeneratedPrompt] = useState<string>('');
-  
-  // App View & History State
-  const [currentView, setCurrentView] = useState<'generator' | 'history'>('generator');
-  const [promptHistory, setPromptHistory] = useState<string[]>([]);
+  const [startFrame, setStartFrame] = useState<File | null>(null);
+  const [startFrameBase64, setStartFrameBase64] = useState<string | null>(null);
+  const [endFrame, setEndFrame] = useState<File | null>(null);
+  const [endFrameBase64, setEndFrameBase64] = useState<string | null>(null);
 
-  // Config State
-  const [generationMode, setGenerationMode] = useState<'select' | 'text' | 'image'>('select');
-  const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imageBase64, setImageBase64] = useState<string | null>(null);
-  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
+  // Configuration
+  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
   const [resolution, setResolution] = useState<'720p' | '1080p'>('720p');
-  const [duration, setDuration] = useState<number>(5);
-  const [stylePreset, setStylePreset] = useState<string>('cinematic');
+  const [duration, setDuration] = useState<number>(8);
 
-  // UI/UX State
-  const [loadingMessage, setLoadingMessage] = useState<string>('');
-  const [placeholder, setPlaceholder] = useState<string>('');
-  const [progress, setProgress] = useState<number>(0);
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [isWelcomeBannerOpen, setIsWelcomeBannerOpen] = useState(false);
-  const [isReferralModalOpen, setIsReferralModalOpen] = useState(false);
-  const [isPricingModalOpen, setIsPricingModalOpen] = useState(false);
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('monthly');
-  const [copyButtonText, setCopyButtonText] = useState('Copy');
+  // App Status
+  const [loading, setLoading] = useState<boolean>(false);
+  const [ttsLoading, setTtsLoading] = useState<boolean>(false);
+  const [currentStep, setCurrentStep] = useState<number>(0);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'canvas' | 'generations'>('canvas');
   
-  // Suggestions State
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [suggestionsLoading, setSuggestionsLoading] = useState<boolean>(false);
-
-  // API & Credits State
+  // Data
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  
+  // Auth & System
   const [apiKeySelected, setApiKeySelected] = useState<boolean>(false);
-  const [generationCost, setGenerationCost] = useState<number | null>(null);
-  const [userCredits, setUserCredits] = useState<number>(50);
+  const [isPricingOpen, setIsPricingOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [userPlanIndex, setUserPlanIndex] = useState(0); // 0: Starter, 1: Pro, 2: Enterprise
 
-  // Refs
-  const progressIntervalRef = useRef<number | null>(null);
-  const fullPlaceholder = "A cinematic shot of a car driving on a rainy night.";
+  // Editing State
+  const [showEditor, setShowEditor] = useState(false);
+  const [isApplyingEdits, setIsApplyingEdits] = useState(false);
+  const [editParams, setEditParams] = useState({
+    brightness: 100,
+    contrast: 100,
+    speed: 1,
+    filter: 'none'
+  });
+
+  // Pricing State
+  const [pricingTab, setPricingTab] = useState<'subscribe' | 'topup'>('subscribe');
+  const [activePlanIndex, setActivePlanIndex] = useState(1);
+  const [activePackIndex, setActivePackIndex] = useState(1);
+  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>('monthly');
+
+  const plans = [
+    {
+        name: "Starter Plan",
+        subheading: "Great for Hobbyists, students, casual creators.",
+        description: "Perfect entry point for experimenting.",
+        price: { monthly: 5, yearly: 45 },
+        features: [
+            "Standard HD output",
+            "AES-256 data encryption",
+            "Community support"
+        ]
+    },
+    {
+        name: "Pro Plan",
+        subheading: "Great for Freelancers, small studios, content creators.",
+        description: "The sweet spot for independent creators.",
+        price: { monthly: 25, yearly: 225 },
+        features: [
+            "Priority rendering queue",
+            "Access to advanced editing tools",
+            "Standard Security SLA",
+            "SOC2 readiness report access"
+        ]
+    },
+    {
+        name: "Enterprise Plan",
+        subheading: "Great for Agencies, businesses, developers.",
+        description: "Power your platform with scalable AI video generation.",
+        price: { monthly: 99, yearly: 891 },
+        features: [
+            "99.99% Uptime Security SLA",
+            "Dedicated support (1h Security Response)",
+            "SOC2 Type II & GDPR Compliance",
+            "SSO / SAML & SCIM provisioning",
+            "Custom Data Residency controls"
+        ]
+    }
+  ];
+
+  const creditPacks = [
+      { credits: 600, price: 5, label: "Starter Pack" },
+      { credits: 1500, price: 12, label: "Creator Pack" },
+      { credits: 3000, price: 25, label: "Pro Pack" },
+      { credits: 10000, price: 75, label: "Studio Pack" },
+      { credits: 30000, price: 99, label: "Enterprise Pack" }
+  ];
+
+  const currentPlan = plans[activePlanIndex];
+  const currentPack = creditPacks[activePackIndex];
+
+  // --- Derived State ---
+  const estimatedCost = resolution === '720p' ? 100 : 150;
+  const isEligibleForEditing = userPlanIndex >= 1;
+
+  // --- Effects ---
 
   useEffect(() => {
-    const welcomeBannerShown = sessionStorage.getItem('welcomeBannerShown');
-    if (!welcomeBannerShown) {
-        setIsWelcomeBannerOpen(true);
-    }
-
     const checkApiKey = async () => {
       if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
         setApiKeySelected(true);
@@ -71,41 +170,21 @@ const VideoGeneratorApp = () => {
     checkApiKey();
   }, []);
 
+  // Auto-scroll to result on mobile when videoUrl changes
   useEffect(() => {
-    let index = 0;
-    setPlaceholder('');
-    const typingInterval = setInterval(() => {
-        if (index < fullPlaceholder.length) {
-            setPlaceholder(prev => prev + fullPlaceholder.charAt(index));
-            index++;
-        } else {
-            clearInterval(typingInterval);
-        }
-    }, 50);
-
-    return () => clearInterval(typingInterval);
-  }, []);
-
-  const calculateCredits = (duration: number, resolution: '720p' | '1080p'): number => {
-    if (duration <= 5) {
-      return resolution === '1080p' ? 2 : 1;
+    if (videoUrl && window.innerWidth <= 768) {
+      requestAnimationFrame(() => {
+          setTimeout(() => {
+            const videoElement = document.querySelector('.video-wrapper');
+            if (videoElement) {
+                videoElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }, 150);
+      });
     }
-    return resolution === '1080p' ? 4 : 2;
-  };
+  }, [videoUrl]);
 
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      if ((generationMode === 'text' && prompt.trim()) || (generationMode === 'image' && imageFile)) {
-        setGenerationCost(calculateCredits(duration, resolution));
-      } else {
-        setGenerationCost(null);
-      }
-    }, 500);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [prompt, duration, resolution, imageFile, generationMode]);
+  // --- Handlers ---
 
   const handleSelectKey = async () => {
     if (window.aistudio) {
@@ -114,11 +193,6 @@ const VideoGeneratorApp = () => {
     }
   };
 
-  const handleCloseWelcomeBanner = () => {
-    setIsWelcomeBannerOpen(false);
-    sessionStorage.setItem('welcomeBannerShown', 'true');
-  };
-  
   const blobToBase64 = (blob: Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -134,156 +208,121 @@ const VideoGeneratorApp = () => {
     });
   };
 
-  const processFile = async (file: File) => {
-    if (file.type.startsWith('image/')) {
-      setImageFile(file);
-      const base64 = await blobToBase64(file);
-      setImageBase64(base64);
-      setError('');
-    } else {
-      setError('Please upload a valid image file (e.g., PNG, JPEG).');
-    }
-  };
-
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'start' | 'end') => {
     const file = e.target.files?.[0];
-    if (file) {
-      processFile(file);
+    if (file && file.type.startsWith('image/')) {
+      const base64 = await blobToBase64(file);
+      if (type === 'start') {
+        setStartFrame(file);
+        setStartFrameBase64(base64);
+      } else {
+        setEndFrame(file);
+        setEndFrameBase64(base64);
+      }
+      setError('');
     }
   };
 
-  const handleImageDrop = (e: React.DragEvent<HTMLLabelElement>) => {
-    e.preventDefault();
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      processFile(file);
+  const removeFile = (type: 'start' | 'end') => {
+    if (type === 'start') {
+      setStartFrame(null);
+      setStartFrameBase64(null);
+    } else {
+      setEndFrame(null);
+      setEndFrameBase64(null);
     }
   };
 
-  const removeImage = () => {
-    setImageFile(null);
-    setImageBase64(null);
-    const fileInput = document.getElementById('image-upload') as HTMLInputElement;
-    if (fileInput) {
-        fileInput.value = '';
-    }
-  };
-
-  const getPromptSuggestions = async () => {
-    setSuggestionsLoading(true);
-    setError('');
+  const handleTTS = async () => {
+    if (!prompt) return;
+    setTtsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: 'Generate 5 short, creative, and diverse prompts for an AI video generation model. The prompts should be cinematic and visually interesting. Return them as a JSON array of strings.',
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: prompt }] }],
         config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.STRING,
-            },
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: 'Kore' },
+              },
           },
         },
       });
 
-      const suggestionsArray = JSON.parse(response.text);
-      if (Array.isArray(suggestionsArray) && suggestionsArray.every(item => typeof item === 'string')) {
-        setSuggestions(suggestionsArray);
-      } else {
-        throw new Error('Invalid format for suggestions');
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (base64Audio) {
+          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+          const decodedBytes = decode(base64Audio);
+          const audioBuffer = await decodeAudioData(decodedBytes, audioCtx, 24000, 1);
+          const source = audioCtx.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(audioCtx.destination);
+          source.start();
       }
-
-    } catch (e: any) {
-      console.error(e);
-      let errorMessage = 'Could not fetch suggestions.';
-      if (e.message) {
-        errorMessage = e.message;
-      }
-      if (errorMessage.includes("Requested entity was not found")) {
-          errorMessage = "Your API key is invalid. Please select a valid key and try again.";
-          setApiKeySelected(false);
-      }
-      setError(errorMessage);
+    } catch (err: any) {
+      console.error("TTS Error:", err);
+      setError("Text-to-speech failed. Please try again.");
     } finally {
-      setSuggestionsLoading(false);
+      setTtsLoading(false);
     }
   };
 
   const generateVideo = async () => {
-    if (generationMode === 'text' && !prompt) {
-      setError("Please enter a prompt.");
+    if (!apiKeySelected) {
+      setError("Please connect your Vertex AI API Key.");
       return;
     }
-    if (generationMode === 'image' && !imageFile) {
-        setError("Please upload an image.");
-        return;
+    if (!prompt && !startFrame) {
+      setError("Please enter a prompt or upload a start frame.");
+      return;
     }
-    if (generationCost === null || userCredits < generationCost) {
-        setError("You don't have enough credits for this video configuration.");
-        return;
-    }
-    
-    if (generationMode === 'text' && prompt && !promptHistory.includes(prompt)) {
-      setPromptHistory(prevHistory => [prompt, ...prevHistory].slice(0, 50));
-    }
-    
-    setLastGeneratedPrompt(prompt);
-    setLoading(true);
-    setProgress(0);
-    setError('');
-    setVideoUrl(null);
-    setSuggestions([]);
-    let messageIndex = 0;
-    setLoadingMessage(loadingMessages[messageIndex]);
-    const messageInterval = setInterval(() => {
-        messageIndex = (messageIndex + 1) % loadingMessages.length;
-        setLoadingMessage(loadingMessages[messageIndex]);
-    }, 5000);
-    
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    progressIntervalRef.current = window.setInterval(() => {
-      setProgress(prev => {
-        if (prev >= 95) {
-          if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-          return 95;
-        }
-        const increment = (100 - prev) / 100;
-        return Math.min(prev + increment * 2, 95);
-      });
-    }, 200);
 
+    setLoading(true);
+    setCurrentStep(0);
+    setError('');
+    setActiveTab('canvas');
+    setVideoUrl(null);
+    setShowEditor(false);
+    
+    let stepIdx = 0;
+    const stepInterval = setInterval(() => {
+        stepIdx++;
+        if (stepIdx < loadingSteps.length) {
+            setCurrentStep(stepIdx);
+        }
+    }, 4500);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      
+      const config: any = {
+        numberOfVideos: 1,
+        resolution: resolution,
+        aspectRatio: aspectRatio,
+      };
 
-      const styleMap: { [key: string]: string } = {
-        cinematic: 'cinematic, dramatic lighting, high detail, 8k',
-        anime: 'in the style of a beautifully animated anime film',
-        pixel_art: 'in a retro 16-bit pixel art style, vibrant colors',
-      };
-      const styleModifier = styleMap[stylePreset] || '';
-      const finalPrompt = [prompt, styleModifier].filter(Boolean).join(', ');
-      
-      const payload: any = {
-          model: 'veo-3.1-fast-generate-preview',
-          prompt: finalPrompt,
-          config: {
-            numberOfVideos: 1,
-            resolution: resolution,
-            aspectRatio: aspectRatio,
-            durationSecs: duration,
-          }
-      };
-      
-      if (generationMode === 'image' && imageBase64 && imageFile) {
-        payload.image = {
-            imageBytes: imageBase64,
-            mimeType: imageFile.type,
+      if (endFrameBase64 && endFrame) {
+        config.lastFrame = {
+            imageBytes: endFrameBase64,
+            mimeType: endFrame.type,
         };
       }
-      
+
+      const payload: any = {
+        model: 'veo-3.1-fast-generate-preview',
+        prompt: prompt || "A high quality video",
+        config: config
+      };
+
+      if (startFrameBase64 && startFrame) {
+        payload.image = {
+            imageBytes: startFrameBase64,
+            mimeType: startFrame.type,
+        };
+      }
+
       let operation = await ai.models.generateVideos(payload);
 
       while (!operation.done) {
@@ -293,636 +332,431 @@ const VideoGeneratorApp = () => {
 
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
       if (downloadLink) {
-        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY!}`);
+        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
         const videoBlob = await response.blob();
         const url = URL.createObjectURL(videoBlob);
+        
+        setCurrentStep(loadingSteps.length - 1);
+        
         setVideoUrl(url);
-        setUserCredits(prev => prev - generationCost!);
+        setHistory(prev => [{
+            prompt: prompt || (startFrame ? "Image to Video" : "Generated Video"),
+            videoUrl: url,
+            timestamp: Date.now(),
+            config: `${resolution} • ${aspectRatio} • ${duration}s`
+        }, ...prev]);
+
       } else {
         throw new Error("Video generation completed, but no download link was found.");
       }
+
     } catch (e: any) {
       console.error(e);
       let errorMessage = 'An unexpected error occurred.';
-      if (e.message) {
-        errorMessage = e.message;
-      }
+      if (e.message) errorMessage = e.message;
       if (errorMessage.includes("Requested entity was not found")) {
-          errorMessage = "Your API key is invalid. Please select a valid key and try again.";
+          errorMessage = "Your API key is invalid or lacks Vertex AI access.";
           setApiKeySelected(false);
       }
       setError(errorMessage);
     } finally {
-      if (progressIntervalRef.current) {
-        clearInterval(progressIntervalRef.current);
-      }
+      clearInterval(stepInterval);
       setLoading(false);
-      setProgress(0);
-      clearInterval(messageInterval);
     }
   };
 
-  const handleSelectPromptFromHistory = (selectedPrompt: string) => {
-    setCurrentView('generator');
-    setGenerationMode('text');
-    setPrompt(selectedPrompt);
-    setImageFile(null);
-    setImageBase64(null);
-    setVideoUrl(null);
-    setError('');
+  const applyEdits = async () => {
+    setIsApplyingEdits(true);
+    setCurrentStep(0);
+    
+    // Simulate processing
+    for (let i = 0; i < editingSteps.length; i++) {
+        setCurrentStep(i);
+        await new Promise(r => setTimeout(r, 1500));
+    }
+    
+    setIsApplyingEdits(false);
+    setShowEditor(false);
   };
-  
-  const handleNavClick = (view: 'generator' | 'history') => {
-    setCurrentView(view);
-    setIsSidebarOpen(false);
-  }
 
   const handleDownload = () => {
     if (!videoUrl) return;
-    const safePrompt = lastGeneratedPrompt.slice(0, 40).replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const fileName = safePrompt ? `ClipGen_${safePrompt}.mp4` : 'ClipGen_video.mp4';
-    
     const a = document.createElement('a');
     a.href = videoUrl;
-    a.download = fileName;
+    a.download = `veo_gen_${Date.now()}.mp4`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
   };
 
-  const handleShare = async () => {
-    if (!videoUrl) return;
-    
-    try {
-      const response = await fetch(videoUrl);
-      const blob = await response.blob();
-      const file = new File([blob], 'ClipGen_video.mp4', { type: 'video/mp4' });
+  // Pricing Navigation
+  const nextPlan = () => setActivePlanIndex((prev) => (prev + 1) % plans.length);
+  const prevPlan = () => setActivePlanIndex((prev) => (prev - 1 + plans.length) % plans.length);
+  
+  const nextPack = () => setActivePackIndex((prev) => (prev + 1) % creditPacks.length);
+  const prevPack = () => setActivePackIndex((prev) => (prev - 1 + creditPacks.length) % creditPacks.length);
 
-      if (navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          files: [file],
-          title: 'AI Generated Video',
-          text: `Check out this video I generated with ClipGen AI!`,
-        });
-      } else {
-        setError("Your browser doesn't support sharing files.");
-      }
-    } catch (error) {
-      console.error('Error sharing:', error);
-      if ((error as Error).name !== 'AbortError') {
-        setError('An error occurred while trying to share the video.');
-      }
-    }
-  };
+  // --- Render Components ---
 
-  const handleCopyReferralLink = () => {
-    const referralLink = 'https://clipgen.ai/invite?ref=user123'; // This is a placeholder
-    navigator.clipboard.writeText(referralLink).then(() => {
-        setCopyButtonText('Copied!');
-        setTimeout(() => setCopyButtonText('Copy'), 2000);
-    }, (err) => {
-        console.error('Could not copy text: ', err);
-        setError('Failed to copy link.');
-    });
-  };
+  const renderIconSidebar = () => (
+    <div className="icon-sidebar">
+      <div className="sidebar-logo-container" style={{ marginBottom: 20 }}>
+         <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M12 2L2 7l10 5 10-5-10-5zm0 9l2.5-1.25L12 8.5 9.5 9.75 12 11zm0 2.5l-5-2.5-5 2.5 10 5 10-5-5-2.5-5 2.5z"/></svg>
+      </div>
+      <button 
+        className={`icon-btn ${activeTab === 'canvas' ? 'active' : ''}`}
+        onClick={() => setActiveTab('canvas')}
+        title="Create"
+      >
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+      </button>
+      <button 
+        className={`icon-btn ${activeTab === 'generations' ? 'active' : ''}`} 
+        onClick={() => setActiveTab('generations')}
+        title="Library"
+      >
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+      </button>
+      <div className="spacer"></div>
+      <button className="icon-btn" onClick={() => setIsPricingOpen(true)} title="Pricing">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 8v8" />
+            <path d="M16 10a2 2 0 0 0-2-2h-2a2 2 0 1 0 0 4h2a2 2 0 1 1 0 4h-2a2 2 0 0 1-2-2" />
+        </svg>
+      </button>
+      <button className="icon-btn" onClick={() => setIsProfileOpen(true)}>
+         <div style={{ width: 24, height: 24, borderRadius: '50%', background: 'linear-gradient(45deg, #4f46e5, #9333ea)' }}></div>
+      </button>
+    </div>
+  );
 
-  const handleSubscribe = (creditsToAdd: number) => {
-    setUserCredits(prev => prev + creditsToAdd);
-    setIsPricingModalOpen(false);
-  };
-
-  const renderGeneratorView = () => {
-    if (!apiKeySelected) {
-      return (
-        <div className="api-key-selector card-style">
-          <h2>Select API Key</h2>
-          <p>
-            Video generation with Veo requires a Google AI API key associated with a project that has billing enabled.
-            Please select your key to continue. For more info, see the <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer">billing documentation</a>.
-          </p>
-          <button onClick={handleSelectKey}>Select API Key</button>
-        </div>
-      );
-    }
-    
-    if (generationMode === 'select') {
-      return (
-        <div className="mode-selection-container card-style">
-          <h2>Choose Generation Mode</h2>
-          <p>Start with a text description or bring your own image to life.</p>
-          <div className="mode-cards">
-            <div className="mode-card" onClick={() => setGenerationMode('text')} role="button" tabIndex={0}>
-              <div className="mode-card-content">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
-                <h3>Text to Video</h3>
-                <span>Generate a video from a descriptive prompt.</span>
-              </div>
-              <button className="btn-select-mode" onClick={(e) => { e.stopPropagation(); setGenerationMode('text'); }}>
-                  Start with Text
-              </button>
+  const renderConfigPanel = () => (
+    <div className="config-panel">
+      <div className="panel-header">
+        <div className="panel-title-row">
+            <h1>Video</h1>
+            <div className="model-selector">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
+                Veo 3.1 Fast
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
             </div>
-            <div className="mode-card" onClick={() => setGenerationMode('image')} role="button" tabIndex={0}>
-              <div className="mode-card-content">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
-                <h3>Image to Video</h3>
-                <span>Animate an image with an optional prompt.</span>
-              </div>
-              <button className="btn-select-mode" onClick={(e) => { e.stopPropagation(); setGenerationMode('image'); }}>
-                  Start with Image
-              </button>
-            </div>
-          </div>
         </div>
-      );
-    }
+        <p className="panel-description">
+            A balanced model for quick turnarounds and creative exploration.
+        </p>
+      </div>
 
-    return (
-      <>
-        <div className="video-generator-app card-style">
-          <div className="app-title">
-            <button className="btn btn-back" onClick={() => {
-                setGenerationMode('select');
-                setPrompt('');
-                setImageFile(null);
-                setImageBase64(null);
-                setVideoUrl(null);
-                setError('');
-            }} aria-label="Go back to mode selection">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
-            </button>
-            <h2>Generate Cinematic Video</h2>
-          </div>
-          <div className="main-content">
-            {generationMode === 'image' && (
-              <div className="image-upload-container">
-                {!imageBase64 ? (
-                  <label htmlFor="image-upload" className="image-upload-area" 
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={handleImageDrop}
-                  >
-                    <input id="image-upload" type="file" accept="image/*" onChange={handleImageChange} hidden />
-                     <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.2 15c.7-1.2 1-2.5.7-3.9-.6-2.8-3.3-4.9-6.3-4.9h-1.3c-.3-1.3-1-2.4-2.1-3.2A5.403 5.403 0 0 0 8 3c-2.4 0-4.4 1.7-5 4-.6 0-1.2.1-1.8.4-1.3.6-2.2 2-2.2 3.6 0 1.9 1.3 3.4 3 3.8h13.7c.9 0 1.7-.5 2.1-1.2z"></path><path d="M12 12v9"></path><path d="m16 16-4 4-4-4"></path></svg>
-                    <span>Click or drag & drop to upload</span>
-                  </label>
+      <div className="config-content">
+        <div>
+            <label className="section-label">Prompt</label>
+            <div className="prompt-container">
+                <textarea 
+                    className="prompt-textarea" 
+                    placeholder="Describe your video..." 
+                    value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)}
+                />
+                <button 
+                    className="tts-btn" 
+                    onClick={handleTTS} 
+                    disabled={!prompt || ttsLoading}
+                    title="Read aloud"
+                >
+                    {ttsLoading ? <div className="mini-spinner" style={{ width: 14, height: 14 }}></div> : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M11 5L6 9H2v6h4l5 4V5z"></path>
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                        </svg>
+                    )}
+                </button>
+            </div>
+        </div>
+
+        <div>
+             <label className="section-label">Source Images</label>
+             <div className="media-inputs-grid">
+                {!startFrame ? (
+                    <label className="media-upload-box">
+                        <input type="file" accept="image/*" hidden onChange={(e) => handleFileChange(e, 'start')} />
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        <span>Start Frame</span>
+                    </label>
                 ) : (
-                  <div className="image-preview">
-                    <img src={`data:${imageFile?.type};base64,${imageBase64}`} alt="Preview" />
-                    <button onClick={removeImage} className="btn-remove-image" aria-label="Remove image">&times;</button>
-                  </div>
+                    <div className="media-upload-box" style={{ cursor: 'default' }}>
+                         <img src={`data:${startFrame.type};base64,${startFrameBase64}`} className="preview-thumb" alt="Start" />
+                         <button className="remove-media-btn" onClick={() => removeFile('start')}>&times;</button>
+                         <span style={{ position: 'absolute', bottom: 8, background: 'rgba(0,0,0,0.7)', padding: '2px 6px', borderRadius: 4, fontSize: 10, zIndex: 5 }}>Start</span>
+                    </div>
                 )}
-              </div>
-            )}
-            <textarea
-              className="prompt-input"
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder={generationMode === 'image' ? "Optional: Describe how the image should animate..." : placeholder}
-              rows={generationMode === 'image' ? 2 : 4}
-              disabled={loading}
-            />
-            <div className="style-preset-selector">
-              <label>Style Preset</label>
-              <div className="preset-buttons">
-                <button
-                  type="button"
-                  className={`btn pill-btn ${stylePreset === 'cinematic' ? 'active' : ''}`}
-                  onClick={() => setStylePreset('cinematic')}
-                  disabled={loading}
-                  aria-pressed={stylePreset === 'cinematic'}
-                >
-                  Cinematic
-                </button>
-                <button
-                  type="button"
-                  className={`btn pill-btn ${stylePreset === 'anime' ? 'active' : ''}`}
-                  onClick={() => setStylePreset('anime')}
-                  disabled={loading}
-                  aria-pressed={stylePreset === 'anime'}
-                >
-                  Anime
-                </button>
-                <button
-                  type="button"
-                  className={`btn pill-btn ${stylePreset === 'pixel_art' ? 'active' : ''}`}
-                  onClick={() => setStylePreset('pixel_art')}
-                  disabled={loading}
-                  aria-pressed={stylePreset === 'pixel_art'}
-                >
-                  Pixel Art
-                </button>
-              </div>
-            </div>
-            {generationMode === 'text' && (
-              <div className="suggestions-area">
-                <div className="suggestions-actions">
-                    <button 
-                        type="button" 
-                        className="btn-suggest" 
-                        onClick={getPromptSuggestions} 
-                        disabled={loading || suggestionsLoading}
-                        aria-label="Suggest prompts"
-                    >
-                        {suggestionsLoading ? <div className="spinner-small"></div> : 'Suggest Prompts'}
-                    </button>
+
+                {!endFrame ? (
+                    <label className="media-upload-box">
+                        <input type="file" accept="image/*" hidden onChange={(e) => handleFileChange(e, 'end')} />
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        <span>End Frame</span>
+                    </label>
+                ) : (
+                    <div className="media-upload-box" style={{ cursor: 'default' }}>
+                         <img src={`data:${endFrame.type};base64,${endFrameBase64}`} className="preview-thumb" alt="End" />
+                         <button className="remove-media-btn" onClick={() => removeFile('end')}>&times;</button>
+                         <span style={{ position: 'absolute', bottom: 8, background: 'rgba(0,0,0,0.7)', padding: '2px 6px', borderRadius: 4, fontSize: 10, zIndex: 5 }}>End</span>
+                    </div>
+                )}
+             </div>
+        </div>
+
+        <div className="settings-group">
+            <div className="setting-item">
+                <div className="setting-label">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                    Duration
                 </div>
-                {suggestions.length > 0 && (
-                    <div className="suggestions-container">
-                        {suggestions.map((suggestion, index) => (
-                            <button 
-                                key={index} 
-                                className="suggestion-pill"
-                                onClick={() => setPrompt(suggestion)}
-                                disabled={loading}
-                            >
-                                {suggestion}
+                <div className="setting-control">{duration}s</div>
+            </div>
+            <div className="setting-item">
+                 <div className="setting-label">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="7" width="20" height="10" rx="2" ry="2"></rect></svg>
+                    Aspect ratio
+                </div>
+                <div className="setting-control" onClick={() => setAspectRatio(prev => prev === '16:9' ? '9:16' : '16:9')}>
+                    {aspectRatio}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </div>
+            </div>
+            <div className="setting-item">
+                <div className="setting-label">
+                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v20M2 12h20"></path><path d="m4.93 4.93 14.14 14.14"></path><path d="m19.07 4.93-14.14 14.14"></path></svg>
+                    Resolution
+                </div>
+                 <div className="setting-control" onClick={() => setResolution(prev => prev === '720p' ? '1080p' : '720p')}>
+                    {resolution}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </div>
+            </div>
+        </div>
+      </div>
+
+      <div className="config-footer">
+        {error && <div className="error-banner">{error}</div>}
+        <button className="generate-btn" onClick={generateVideo} disabled={loading || !apiKeySelected}>
+            {loading ? "Generating..." : <> <span style={{ marginRight: '6px' }}>✨</span> Generate • {estimatedCost} Credits </>}
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderEditorPanel = () => (
+    <div className={`editing-sidebar ${showEditor ? 'visible' : ''}`}>
+        <div className="sidebar-inner">
+            <div className="sidebar-header">
+                <h3>Advanced Edits</h3>
+                <button className="icon-btn" onClick={() => setShowEditor(false)}>&times;</button>
+            </div>
+
+            {!isEligibleForEditing && (
+                <div className="locked-overlay">
+                    <div className="locked-content">
+                        <div className="lock-icon">
+                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                        </div>
+                        <h4>Pro Feature</h4>
+                        <p>Unlock editing tools with a Pro subscription.</p>
+                        <button className="btn-primary" onClick={() => setIsPricingOpen(true)}>Upgrade Now</button>
+                    </div>
+                </div>
+            )}
+
+            <div className="sidebar-scroll">
+                <div className="edit-group">
+                    <label className="section-label">Color Grading</label>
+                    <div className="slider-item">
+                        <span>Brightness</span>
+                        <input type="range" min="50" max="150" value={editParams.brightness} onChange={(e) => setEditParams({...editParams, brightness: parseInt(e.target.value)})} />
+                    </div>
+                    <div className="slider-item">
+                        <span>Contrast</span>
+                        <input type="range" min="50" max="150" value={editParams.contrast} onChange={(e) => setEditParams({...editParams, contrast: parseInt(e.target.value)})} />
+                    </div>
+                </div>
+
+                <div className="edit-group">
+                    <label className="section-label">Motion Control</label>
+                    <div className="speed-chips">
+                        {[0.5, 1, 1.5, 2].map(s => (
+                            <button key={s} className={`chip ${editParams.speed === s ? 'active' : ''}`} onClick={() => setEditParams({...editParams, speed: s})}>{s}x</button>
+                        ))}
+                    </div>
+                </div>
+
+                <div className="edit-group">
+                    <label className="section-label">Cinematic Filters</label>
+                    <div className="filter-grid">
+                        {['none', 'noir', 'vintage', 'cyber', 'vibrant'].map(f => (
+                            <button key={f} className={`filter-chip ${editParams.filter === f ? 'active' : ''}`} onClick={() => setEditParams({...editParams, filter: f})}>
+                                <div className={`filter-preview ${f}`} />
+                                <span>{f.charAt(0).toUpperCase() + f.slice(1)}</span>
                             </button>
                         ))}
                     </div>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="app-footer">
-            <div className="controls-wrapper">
-               {generationCost !== null && (
-                <div className="credit-counter">
-                  Estimated Credits: {generationCost}
                 </div>
-              )}
-              <div className="footer-controls">
-                <div className="aspect-ratio-selector">
-                  <button
-                      type="button"
-                      className={`btn pill-btn ${aspectRatio === '16:9' ? 'active' : ''}`}
-                      onClick={() => setAspectRatio('16:9')}
-                      disabled={loading}
-                      aria-label="Set aspect ratio to 16:9 (landscape)"
-                  >
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"></rect></svg>
-                      <span>16:9</span>
-                  </button>
-                  <button
-                      type="button"
-                      className={`btn pill-btn ${aspectRatio === '9:16' ? 'active' : ''}`}
-                      onClick={() => setAspectRatio('9:16')}
-                      disabled={loading}
-                      aria-label="Set aspect ratio to 9:16 (portrait)"
-                  >
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="3" width="14" height="18" rx="2"></rect></svg>
-                      <span>9:16</span>
-                  </button>
-                </div>
-                <div className="resolution-selector">
-                    <button
-                        type="button"
-                        className={`btn pill-btn ${resolution === '720p' ? 'active' : ''}`}
-                        onClick={() => setResolution('720p')}
-                        disabled={loading}
-                        aria-label="Set resolution to 720p"
-                    >
-                        <span>720p</span>
-                    </button>
-                    <button
-                        type="button"
-                        className={`btn pill-btn ${resolution === '1080p' ? 'active' : ''}`}
-                        onClick={() => setResolution('1080p')}
-                        disabled={loading}
-                        aria-label="Set resolution to 1080p HD"
-                    >
-                        <span>1080p</span>
-                    </button>
-                </div>
-                <div className="duration-selector">
-                  <input 
-                    type="range" 
-                    min="1" 
-                    max="8" 
-                    value={duration}
-                    onChange={(e) => setDuration(Number(e.target.value))}
-                    disabled={loading}
-                    aria-label="Video duration in seconds"
-                  />
-                  <span className="duration-label">{duration}s</span>
-                </div>
-              </div>
             </div>
-            <div className="footer-actions">
-              <button type="button" className="btn" disabled={loading} aria-label="Use microphone">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line></svg>
-              </button>
-              <button 
-                className="btn btn-submit" 
-                onClick={generateVideo} 
-                disabled={
-                    loading || 
-                    (generationMode === 'text' && !prompt) || 
-                    (generationMode === 'image' && !imageFile) ||
-                    (generationCost !== null && userCredits < generationCost)
-                } 
-                aria-label="Generate video">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
-              </button>
+
+            <div className="sidebar-footer">
+                <button className="btn-primary apply-btn" onClick={applyEdits} disabled={isApplyingEdits}>
+                    {isApplyingEdits ? "Applying..." : "Apply Changes"}
+                </button>
             </div>
-          </div>
-          {error && <div className="error-container"><p>{error}</p></div>}
         </div>
-        
-        <div className="result-container card-style">
-            {videoUrl ? (
-                <>
-                    <h2>Your Video is Ready!</h2>
-                    <video src={videoUrl} controls autoPlay loop />
-                    <div className="result-actions">
-                        <button className="btn-result-action" onClick={handleDownload}>
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                            <span>Download</span>
-                        </button>
-                        {navigator.share && (
-                            <button className="btn-result-action" onClick={handleShare}>
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
-                                <span>Share</span>
-                            </button>
-                        )}
-                    </div>
-                </>
-            ) : (
-                <div className="video-placeholder">
-                    <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M15 13l-3 3-3-3"></path><path d="M12 16V8"></path><path d="M21 3H3v18h18V3z"></path><path d="M9 3v18"></path></svg>
-                    <h3>Video Player</h3>
-                    <p>Your successfully generated video will appear here.</p>
-                </div>
-            )}
-        </div>
-      </>
-    );
-  };
-  
-  const renderHistoryView = () => {
-    return (
-      <div className="history-view card-style">
-        <div className="history-header">
-            <h2>Prompt History</h2>
-            <p>View and re-run your previous text-to-video prompts.</p>
-        </div>
-        {promptHistory.length === 0 ? (
-            <div className="empty-history">
-                <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
-                <h3>No History Yet</h3>
-                <p>Your generated text prompts will appear here.</p>
-                <button className="btn-primary" onClick={() => handleNavClick('generator')}>Create a new video</button>
-            </div>
-        ) : (
-            <ul className="history-list">
-                {promptHistory.map((histPrompt, index) => (
-                    <li key={index} className="history-item">
-                        <p className="history-prompt-text">{histPrompt}</p>
-                        <button className="btn-use-prompt" onClick={() => handleSelectPromptFromHistory(histPrompt)}>
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>
-                            <span>Use Prompt</span>
-                        </button>
-                    </li>
-                ))}
-            </ul>
-        )}
+    </div>
+  );
+
+  const renderCanvas = () => (
+    <div className="canvas-area">
+      <div className="canvas-tabs">
+        <button className={`tab-btn ${activeTab === 'canvas' ? 'active' : ''}`} onClick={() => setActiveTab('canvas')}>Canvas</button>
+        <button className={`tab-btn ${activeTab === 'generations' ? 'active' : ''}`} onClick={() => setActiveTab('generations')}>Library</button>
       </div>
-    );
-  };
+
+      <div className="canvas-main-layout">
+        <div className="canvas-content">
+            {activeTab === 'canvas' ? (
+                loading || isApplyingEdits ? (
+                    <div className="loading-steps-container">
+                        <h3 style={{ marginBottom: 20 }}>{isApplyingEdits ? "Applying edits..." : "Creating your video..."}</h3>
+                        {(isApplyingEdits ? editingSteps : loadingSteps).map((step, index) => {
+                            let status: 'completed' | 'active' | 'pending' = 'pending';
+                            if (index < currentStep) status = 'completed';
+                            else if (index === currentStep) status = 'active';
+
+                            return (
+                                <div key={index} className={`step-item ${status}`}>
+                                    <div className="step-icon">
+                                        {status === 'completed' && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="3"><polyline points="20 6 9 17 4 12"></polyline></svg>}
+                                        {status === 'active' && <div className="mini-spinner"></div>}
+                                        {status === 'pending' && <div className="empty-dot"></div>}
+                                    </div>
+                                    <span className="step-label">{step}</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                ) : videoUrl ? (
+                    <div className="video-wrapper">
+                        <video src={videoUrl} controls autoPlay loop style={{ 
+                            filter: `brightness(${editParams.brightness}%) contrast(${editParams.contrast}%)` 
+                        }} />
+                        <div className="video-actions">
+                            <button className="action-btn" onClick={() => setShowEditor(true)}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+                                Edit Video
+                            </button>
+                            <button className="action-btn" onClick={handleDownload}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                                Download
+                            </button>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="empty-state">
+                        <svg className="empty-icon" width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#333" strokeWidth="1"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                        <h3>No video generations yet</h3>
+                        <p>Generate your first video to see it here.</p>
+                    </div>
+                )
+            ) : (
+                <div className="generations-grid">
+                    {history.length === 0 ? <p className="empty-state">No history yet.</p> : history.map((item, idx) => (
+                        <div key={idx} className="history-card" onClick={() => { setVideoUrl(item.videoUrl); setActiveTab('canvas'); }}>
+                            <div className="history-thumbnail"><video src={item.videoUrl} muted /></div>
+                            <div className="history-info">
+                                <div className="history-prompt">{item.prompt}</div>
+                                <div className="history-date">{item.config}</div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+        {activeTab === 'canvas' && renderEditorPanel()}
+      </div>
+    </div>
+  );
 
   return (
-     <div className={`app-layout ${isSidebarOpen ? 'sidebar-open' : ''}`}>
-        {isSidebarOpen && <div className="sidebar-overlay" onClick={() => setIsSidebarOpen(false)}></div>}
-        <aside className={`sidebar ${isSidebarOpen ? 'open' : ''}`}>
-          <div>
-              <div className="sidebar-header">
-                  <div className="sidebar-brand">ClipGen AI</div>
-                  <button className="sidebar-close-btn" onClick={() => setIsSidebarOpen(false)} aria-label="Close navigation menu">&times;</button>
-              </div>
-              <nav className="sidebar-nav">
-                  <ul>
-                      <li className="nav-item">
-                          <button className={`nav-link ${currentView === 'generator' ? 'active' : ''}`} onClick={() => handleNavClick('generator')}>
-                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                              <span>Generator</span>
-                          </button>
-                      </li>
-                      <li className="nav-item">
-                          <button className={`nav-link ${currentView === 'history' ? 'active' : ''}`} onClick={() => handleNavClick('history')}>
-                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 4v6h6"></path><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>
-                              <span>Prompt History</span>
-                          </button>
-                      </li>
-                      <li className="nav-item">
-                          <button className="nav-link" onClick={() => { setIsPricingModalOpen(true); setIsSidebarOpen(false); }}>
-                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg>
-                              <span>Pricing</span>
-                          </button>
-                      </li>
-                      <li className="nav-item">
-                          <button className="nav-link" onClick={() => { setIsReferralModalOpen(true); setIsSidebarOpen(false); }}>
-                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 12 20 22 4 22 4 12"></polyline><rect x="2" y="7" width="20" height="5"></rect><line x1="12" y1="22" x2="12" y2="7"></line><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path></svg>
-                              <span>Refer a Friend</span>
-                          </button>
-                      </li>
-                  </ul>
-              </nav>
-          </div>
-          <div className="sidebar-footer">
-              <div className="user-profile" onClick={() => setIsAuthModalOpen(true)} role="button" tabIndex={0}>
-                  <div className="user-avatar">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                  </div>
-                  <div className="user-details">
-                      <span className="user-name">My Profile</span>
-                      <span className="user-credits">Credits: <strong>{userCredits}</strong></span>
-                  </div>
-              </div>
-          </div>
-        </aside>
+    <div className={`app-container tab-${activeTab}`}>
+      {renderIconSidebar()}
+      {renderConfigPanel()}
+      {renderCanvas()}
 
-        <main className="main-content-area">
-          <header className="main-header">
-            <button className="sidebar-toggle-btn" onClick={() => setIsSidebarOpen(true)} aria-label="Open navigation menu">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-            </button>
-          </header>
-          <div className="content-scroll-wrapper">
-            {currentView === 'generator' ? renderGeneratorView() : renderHistoryView()}
-          </div>
-        </main>
-      
-        {loading && (
-          <div className="loading-overlay">
-            <div className="loading-content">
-              {generationMode === 'image' && imageBase64 ? (
-                <div className="loading-preview-wrapper">
-                  <img 
-                      src={`data:${imageFile?.type};base64,${imageBase64}`} 
-                      alt="Generation in progress" 
-                      className="loading-preview-image" 
-                  />
-                </div>
-              ) : (
-                  <div className="spinner"></div>
-              )}
-              <p>{loadingMessage}</p>
-              <div className="progress-bar-container">
-                <div className="progress-bar" style={{ width: `${progress}%` }}></div>
-              </div>
+      {!apiKeySelected && (
+         <div className="modal-overlay">
+            <div className="modal-content">
+                <h2>Connect Vertex AI</h2>
+                <p style={{ color: '#a1a1aa', marginTop: 12, lineHeight: 1.5 }}>To use Veo 3.1, you need to connect your Google Cloud API Key with Vertex AI enabled.</p>
+                <button className="btn-primary" onClick={handleSelectKey}>Connect API Key</button>
             </div>
-          </div>
-        )}
+         </div>
+      )}
 
-        {isAuthModalOpen && (
-          <div className="auth-modal-overlay" onClick={() => setIsAuthModalOpen(false)}>
-              <div className="auth-modal" onClick={(e) => e.stopPropagation()}>
-                  <button className="auth-modal-close-btn" onClick={() => setIsAuthModalOpen(false)} aria-label="Close sign in modal">&times;</button>
-                  <div className="auth-modal-header">
-                      <h2>Sign In / Sign Up</h2>
+      {isPricingOpen && (
+          <div className="modal-overlay" onClick={(e) => { if(e.target === e.currentTarget) setIsPricingOpen(false) }}>
+              <div className="modal-content pricing-modal">
+                  <div className="modal-drag-handle"></div>
+                  <button className="modal-close" onClick={() => setIsPricingOpen(false)}>&times;</button>
+                  <div className="pricing-header">
+                      <h2>Pricing & Security</h2>
+                      <p>Secure-first video generation for teams and enterprises.</p>
                   </div>
-                  <div className="auth-modal-body">
-                      <label htmlFor="email-input">Email address</label>
-                      <input id="email-input" type="email" placeholder="you@example.com" />
-                      <button className="auth-btn email-btn">Continue with Email</button>
-                      <div className="divider"><span>or</span></div>
-                      <button className="auth-btn google-btn">
-                          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 18 18"><path d="M16.51 8.1H8.98v3.2h4.57c-.2 1.18-.86 2.18-1.94 2.84v2.02h2.6c1.52-1.4 2.38-3.48 2.38-5.86 0-.6-.05-1.18-.15-1.76Z" fill="#4285F4"></path><path d="M8.98 17c2.43 0 4.47-.8 5.96-2.18l-2.6-2.02c-.8.54-1.82.86-3.36.86-2.58 0-4.78-1.72-5.57-4.02H.96v2.09c1.65 3.28 4.77 5.24 8.02 5.24Z" fill="#34A853"></path><path d="M3.41 10.71a5.48 5.48 0 0 1 0-3.42V5.2H.96a8.99 8.99 0 0 0 0 7.6l2.45-2.09Z" fill="#FBBC05"></path><path d="M8.98 3.4c1.3 0 2.5.45 3.42 1.35l2.3-2.3C13.45.8 11.4 0 8.98 0 5.73 0 2.61 1.96.96 5.2l2.45 2.09c.79-2.3 2.99-4.02 5.57-4.02Z" fill="#EA4335"></path></svg>
-                          Sign in with Google
-                      </button>
+                  <div className="pricing-main-tabs">
+                    <button className={`main-tab-btn ${pricingTab === 'subscribe' ? 'active' : ''}`} onClick={() => setPricingTab('subscribe')}>Subscribe</button>
+                    <button className={`main-tab-btn ${pricingTab === 'topup' ? 'active' : ''}`} onClick={() => setPricingTab('topup')}>Pay As You Go</button>
                   </div>
-                  <div className="auth-modal-footer">
-                      <p>By continuing, you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.</p>
+                  {pricingTab === 'subscribe' && (
+                    <>
+                        <div className="billing-toggle">
+                            <button className={`toggle-option ${billingCycle === 'monthly' ? 'active' : ''}`} onClick={() => setBillingCycle('monthly')}>Monthly</button>
+                            <button className={`toggle-option ${billingCycle === 'yearly' ? 'active' : ''}`} onClick={() => setBillingCycle('yearly')}>Yearly <span className="discount-badge">-25%</span></button>
+                        </div>
+                        <div className="pricing-slider">
+                            <button className="slider-arrow left" onClick={prevPlan}>&lt;</button>
+                            <div className="slider-content">
+                                <div className="pricing-option active">
+                                    <div className="option-header">
+                                        <div><span className="plan-name">{currentPlan.name}</span><div className="plan-subheading">{currentPlan.subheading}</div></div>
+                                        <span className="plan-price">${billingCycle === 'monthly' ? currentPlan.price.monthly : currentPlan.price.yearly}<span className="period">/{billingCycle === 'monthly' ? 'mo' : 'yr'}</span></span>
+                                    </div>
+                                    <p className="plan-desc">{currentPlan.description}</p>
+                                    <div className="option-features">{currentPlan.features.map((feature, i) => (<div className="feature-item" key={i}>✓ {feature}</div>))}</div>
+                                </div>
+                            </div>
+                            <button className="slider-arrow right" onClick={nextPlan}>&gt;</button>
+                        </div>
+                        <button className="btn-primary subscribe-btn" onClick={() => { setUserPlanIndex(activePlanIndex); setIsPricingOpen(false); }}>
+                            {userPlanIndex === activePlanIndex ? "Current Plan" : `Subscribe to ${currentPlan.name.split(' ')[0]}`}
+                        </button>
+                    </>
+                  )}
+              </div>
+          </div>
+      )}
+
+      {isProfileOpen && (
+          <div className="modal-overlay">
+              <div className="modal-content" style={{ maxWidth: 400 }}>
+                  <button className="modal-close" onClick={() => setIsProfileOpen(false)}>&times;</button>
+                  <h2>{authMode === 'signin' ? 'Welcome back' : 'Create an account'}</h2>
+                  <div className="auth-form">
+                    <div className="form-group"><label className="form-label">Email</label><input type="email" className="form-input" placeholder="name@example.com" /></div>
+                    <div className="form-group"><label className="form-label">Password</label><input type="password" className="form-input" placeholder="••••••••" /></div>
+                    <button className="btn-primary" style={{ width: '100%' }} onClick={() => setIsProfileOpen(false)}>{authMode === 'signin' ? 'Sign In' : 'Sign Up'}</button>
                   </div>
               </div>
           </div>
-        )}
-
-        {isPricingModalOpen && (
-            <div className="pricing-modal-overlay" onClick={() => setIsPricingModalOpen(false)}>
-                <div className="pricing-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="pricing-modal-title">
-                    <button className="pricing-modal-close-btn" onClick={() => setIsPricingModalOpen(false)} aria-label="Close pricing modal">&times;</button>
-                    <div className="pricing-header">
-                        <h2 id="pricing-modal-title">Choose Your Plan</h2>
-                        <p>Unlock more features and credits to create amazing videos.</p>
-                        <div className="billing-toggle-buttons">
-                            <button
-                                className={`btn-toggle ${billingCycle === 'monthly' ? 'active' : ''}`}
-                                onClick={() => setBillingCycle('monthly')}
-                                aria-pressed={billingCycle === 'monthly'}
-                            >
-                                Monthly
-                            </button>
-                            <button
-                                className={`btn-toggle ${billingCycle === 'annual' ? 'active' : ''}`}
-                                onClick={() => setBillingCycle('annual')}
-                                aria-pressed={billingCycle === 'annual'}
-                            >
-                                Annual <span className="discount-badge">Save 20%</span>
-                            </button>
-                        </div>
-                    </div>
-                    <div className="pricing-plans">
-                        <div className="pricing-card">
-                            <h3 className="plan-name">Hobbyist</h3>
-                            <p className="price">${billingCycle === 'monthly' ? '10' : '8'}<span className="price-period">/mo</span></p>
-                            <p className="billing-info">{billingCycle === 'annual' ? 'Billed as $96 per year' : 'Billed monthly'}</p>
-                            <button className="btn-subscribe" onClick={() => handleSubscribe(billingCycle === 'monthly' ? 120 : 1440)}>
-                                {billingCycle === 'monthly' ? 'Get 120 Credits' : 'Get 1440 Credits'}
-                            </button>
-                            <ul className="features-list">
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Up to 120 generations/mo</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Standard generation speed</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>720p & 1080p Resolution</li>
-                            </ul>
-                        </div>
-                        <div className="pricing-card popular">
-                             <div className="popular-badge">Most Popular</div>
-                            <h3 className="plan-name">Pro</h3>
-                            <p className="price">${billingCycle === 'monthly' ? '25' : '20'}<span className="price-period">/mo</span></p>
-                            <p className="billing-info">{billingCycle === 'annual' ? 'Billed as $240 per year' : 'Billed monthly'}</p>
-                             <button className="btn-subscribe" onClick={() => handleSubscribe(billingCycle === 'monthly' ? 300 : 3600)}>
-                                {billingCycle === 'monthly' ? 'Get 300 Credits' : 'Get 3600 Credits'}
-                            </button>
-                            <ul className="features-list">
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Up to 300 generations/mo</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Priority generation speed</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>No watermarks</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Community support</li>
-                            </ul>
-                        </div>
-                        <div className="pricing-card">
-                            <h3 className="plan-name">Expert</h3>
-                            <p className="price">${billingCycle === 'monthly' ? '50' : '40'}<span className="price-period">/mo</span></p>
-                            <p className="billing-info">{billingCycle === 'annual' ? 'Billed as $480 per year' : 'Billed monthly'}</p>
-                             <button className="btn-subscribe" onClick={() => handleSubscribe(billingCycle === 'monthly' ? 750 : 9000)}>
-                                {billingCycle === 'monthly' ? 'Get 750 Credits' : 'Get 9000 Credits'}
-                            </button>
-                            <ul className="features-list">
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Up to 750 generations/mo</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Fastest generation speed</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Access to beta features</li>
-                                <li><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>Dedicated support</li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        )}
-
-        {isReferralModalOpen && (
-            <div className="referral-modal-overlay" onClick={() => setIsReferralModalOpen(false)}>
-                <div className="referral-modal" onClick={(e) => e.stopPropagation()}>
-                    <button className="referral-modal-close-btn" onClick={() => setIsReferralModalOpen(false)} aria-label="Close referral modal">&times;</button>
-                    <div className="referral-modal-content">
-                        <div className="referral-icon">
-                           <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 12 20 22 4 22 4 12"></polyline><rect x="2" y="7" width="20" height="5"></rect><line x1="12" y1="22" x2="12" y2="7"></line><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path></svg>
-                        </div>
-                        <h2>Refer a Friend</h2>
-                        <p className="referral-text">Refer a friend and get Rp 50k worth of credit token</p>
-                        <div className="referral-link-container">
-                            <input type="text" value="https://clipgen.ai/invite?ref=user123" readOnly aria-label="Referral link" />
-                            <button className="btn-copy" onClick={handleCopyReferralLink}>
-                                {copyButtonText}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        )}
-
-        {isWelcomeBannerOpen && (
-          <div className="welcome-banner-overlay" onClick={handleCloseWelcomeBanner}>
-              <div className="welcome-banner-modal" onClick={(e) => e.stopPropagation()}>
-                  <button className="welcome-banner-close-btn" onClick={handleCloseWelcomeBanner} aria-label="Close welcome banner">&times;</button>
-                  <div className="welcome-banner-video-container">
-                      {/* GUIDELINE: To change the video, replace the src URL below with your own video file URL. */}
-                      <video 
-                          src="https://assets.mixkit.co/videos/preview/mixkit-nebula-plasma-leaking-from-a-sphere-4147-large.mp4" 
-                          autoPlay 
-                          muted 
-                          loop 
-                          playsInline 
-                      />
-                  </div>
-                  <div className="welcome-banner-content">
-                      <h2>Bring Your Ideas to Life</h2>
-                      <p>Generate stunning, high-quality videos from a simple text prompt or image using the power of AI.</p>
-                      <button className="btn-primary" onClick={handleCloseWelcomeBanner}>Start Creating</button>
-                  </div>
-              </div>
-          </div>
-        )}
-     </div>
+      )}
+    </div>
   );
 };
 
-const rootElement = document.getElementById('root');
-if (rootElement) {
-  const root = ReactDOM.createRoot(rootElement);
-  root.render(
-    <React.StrictMode>
-      <VideoGeneratorApp />
-    </React.StrictMode>
-  );
-} else {
-    console.error('Root element with id "root" not found in the document.');
-}
+const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+root.render(<VideoGeneratorApp />);
