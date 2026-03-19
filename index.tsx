@@ -70,6 +70,7 @@ const VideoGeneratorApp = () => {
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
   const [resolution, setResolution] = useState<'720p' | '1080p'>('720p');
   const [duration, setDuration] = useState<number>(8);
+  const [personGeneration, setPersonGeneration] = useState<'dont_allow' | 'allow_adult'>('dont_allow');
 
   // App Status
   const [loading, setLoading] = useState<boolean>(false);
@@ -303,6 +304,8 @@ const VideoGeneratorApp = () => {
         numberOfVideos: 1,
         resolution: resolution,
         aspectRatio: aspectRatio,
+        personGeneration: personGeneration,
+        durationSeconds: duration
       };
 
       // Handle End Frame (lastFrame)
@@ -535,9 +538,19 @@ const VideoGeneratorApp = () => {
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                     Duration
                 </div>
-                <div className="setting-control">
+                <div className="setting-control" onClick={() => setDuration(prev => prev === 8 ? 4 : 8)}>
                     {duration}s
-                    {/* Simplified for UI - in real app could be dropdown */}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </div>
+            </div>
+            <div className="setting-item">
+                <div className="setting-label">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                    People
+                </div>
+                <div className="setting-control" onClick={() => setPersonGeneration(prev => prev === 'dont_allow' ? 'allow_adult' : 'dont_allow')}>
+                    {personGeneration === 'dont_allow' ? 'No People' : 'Allow Adult'}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
                 </div>
             </div>
             <div className="setting-item">
