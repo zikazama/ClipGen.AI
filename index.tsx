@@ -262,7 +262,7 @@ const VideoGeneratorApp = () => {
           source.connect(audioCtx.destination);
           source.start();
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("TTS Error:", err);
       setError("Text-to-speech failed. Please try again.");
     } finally {
@@ -355,11 +355,13 @@ const VideoGeneratorApp = () => {
         throw new Error("Video generation completed, but no download link was found.");
       }
 
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
       let errorMessage = 'An unexpected error occurred.';
-      if (e.message) {
+      if (e instanceof Error) {
         errorMessage = e.message;
+      } else if (e !== null && typeof e === 'object' && 'message' in e) {
+        errorMessage = String((e as Record<string, unknown>).message);
       }
       if (errorMessage.includes("Requested entity was not found")) {
           errorMessage = "Your API key is invalid or lacks Vertex AI access.";
