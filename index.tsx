@@ -1,7 +1,8 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import { GoogleGenAI, Modality } from '@google/genai';
+import { Modality } from '@google/genai';
+import { decode, secureFetch, getAIClient } from './utils';
 
 const loadingSteps = [
   "Initializing Veo 3.1 model",
@@ -23,17 +24,6 @@ const AVAILABLE_MODELS = [
   { id: 'veo-3.1-fast-generate-preview', name: 'Veo 3.1 Fast', description: 'Optimized for speed and quick previews.' },
   { id: 'veo-3.1-generate-preview', name: 'Veo 3.1 High Quality', description: 'Highest fidelity and cinematic detail.' }
 ];
-
-// Audio Decoding Helpers for TTS
-function decode(base64: string) {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
 
 async function decodeAudioData(
   data: Uint8Array,
@@ -238,7 +228,7 @@ const VideoGeneratorApp = () => {
     if (!prompt) return;
     setTtsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = getAIClient();
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: prompt }] }],
@@ -297,7 +287,7 @@ const VideoGeneratorApp = () => {
 
     try {
       // Create a new instance right before use to ensure the latest API key is used
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = getAIClient();
       
       const config: any = {
         numberOfVideos: 1,
@@ -336,7 +326,7 @@ const VideoGeneratorApp = () => {
 
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
       if (downloadLink) {
-        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        const response = await secureFetch(downloadLink);
         const videoBlob = await response.blob();
         const url = URL.createObjectURL(videoBlob);
         
