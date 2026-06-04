@@ -3,6 +3,25 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+interface ImageInput {
+  imageBytes: string;
+  mimeType: string;
+}
+
+interface GenerateVideosConfig {
+  numberOfVideos?: number;
+  resolution?: '720p' | '1080p' | string;
+  aspectRatio?: '16:9' | '9:16' | '1:1' | string;
+  lastFrame?: ImageInput;
+}
+
+interface GenerateVideosParameters {
+  model: string;
+  prompt?: string;
+  config?: GenerateVideosConfig;
+  image?: ImageInput;
+}
+
 const loadingSteps = [
   "Initializing Veo 3.1 model",
   "Analyzing inputs & vectors",
@@ -299,7 +318,7 @@ const VideoGeneratorApp = () => {
       // Create a new instance right before use to ensure the latest API key is used
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       
-      const config: any = {
+      const config: GenerateVideosConfig = {
         numberOfVideos: 1,
         resolution: resolution,
         aspectRatio: aspectRatio,
@@ -313,7 +332,7 @@ const VideoGeneratorApp = () => {
         };
       }
 
-      const payload: any = {
+      const payload: GenerateVideosParameters = {
         model: selectedModel.id,
         prompt: prompt || "A high quality video", // Fallback if user only provides image
         config: config
