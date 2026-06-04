@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
+import { decode } from './utils.ts';
 
 const loadingSteps = [
   "Initializing Veo 3.1 model",
@@ -25,16 +26,6 @@ const AVAILABLE_MODELS = [
 ];
 
 // Audio Decoding Helpers for TTS
-function decode(base64: string) {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes;
-}
-
 async function decodeAudioData(
   data: Uint8Array,
   ctx: AudioContext,
