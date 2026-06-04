@@ -45,13 +45,48 @@ async function decodeAudioData(
   const frameCount = dataInt16.length / numChannels;
   const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
 
-  for (let channel = 0; channel < numChannels; channel++) {
-    const channelData = buffer.getChannelData(channel);
-    for (let i = 0; i < frameCount; i++) {
-      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-    }
-  }
-  return buffer;
+  return new Promise((resolve, reject) => {
+    const workerCode = `
+      self.onmessage = function(e) {
+        const { dataInt16, numChannels, frameCount } = e.data;
+        const channels = new Array(numChannels);
+        for (let channel = 0; channel < numChannels; channel++) {
+          const channelData = new Float32Array(frameCount);
+          for (let i = 0; i < frameCount; i++) {
+            channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+          }
+          channels[channel] = channelData;
+        }
+
+        self.postMessage({ channels }, channels.map(c => c.buffer));
+      };
+    `;
+
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    const workerUrl = URL.createObjectURL(blob);
+    const worker = new Worker(workerUrl);
+
+    worker.onmessage = (e) => {
+      const { channels } = e.data;
+      for (let channel = 0; channel < numChannels; channel++) {
+        buffer.copyToChannel(channels[channel], channel);
+      }
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+      resolve(buffer);
+    };
+
+    worker.onerror = (err) => {
+      worker.terminate();
+      URL.revokeObjectURL(workerUrl);
+      reject(err);
+    };
+
+    // To avoid copying the entire dataInt16 array on message passing (since dataInt16.buffer might be shared if it comes from a larger buffer or not, but here it's created via base64, so it's a new ArrayBuffer), we can transfer it if we don't need it on the main thread anymore, but it's okay to just copy it or pass it.
+    // wait, we can't transfer data.buffer if it's used elsewhere, but dataInt16 is just a view.
+    // Let's copy it for simplicity and safety or just pass the Int16Array (it gets cloned).
+    worker.postMessage({ dataInt16, numChannels, frameCount });
+  });
 }
 
 const VideoGeneratorApp = () => {
