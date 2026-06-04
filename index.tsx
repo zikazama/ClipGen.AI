@@ -69,7 +69,7 @@ const VideoGeneratorApp = () => {
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
   const [resolution, setResolution] = useState<'720p' | '1080p'>('720p');
-  const [duration, setDuration] = useState<number>(8);
+  const duration = 8;
 
   // App Status
   const [loading, setLoading] = useState<boolean>(false);
