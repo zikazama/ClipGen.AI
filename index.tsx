@@ -1,7 +1,7 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
+import { blobToBase64 } from './utils';
 
 const loadingSteps = [
   "Initializing Veo 3.1 model",
@@ -192,21 +192,6 @@ const VideoGeneratorApp = () => {
       await window.aistudio.openSelectKey();
       setApiKeySelected(true);
     }
-  };
-
-  const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result.split(',')[1]);
-        } else {
-          reject('Failed to convert blob to base64');
-        }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'start' | 'end') => {
