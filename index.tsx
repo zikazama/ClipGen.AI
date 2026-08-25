@@ -2,6 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
+import { secureFetch, getAIClient } from './utils';
 
 const loadingSteps = [
   "Initializing Veo 3.1 model",
@@ -238,7 +239,7 @@ const VideoGeneratorApp = () => {
     if (!prompt) return;
     setTtsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = getAIClient(GoogleGenAI);
       const response = await ai.models.generateContent({
         model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: prompt }] }],
@@ -297,7 +298,7 @@ const VideoGeneratorApp = () => {
 
     try {
       // Create a new instance right before use to ensure the latest API key is used
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = getAIClient(GoogleGenAI);
       
       const config: any = {
         numberOfVideos: 1,
@@ -336,7 +337,7 @@ const VideoGeneratorApp = () => {
 
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
       if (downloadLink) {
-        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        const response = await secureFetch(downloadLink);
         const videoBlob = await response.blob();
         const url = URL.createObjectURL(videoBlob);
         

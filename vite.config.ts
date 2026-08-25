@@ -8,12 +8,20 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        proxy: {
+          '/api': {
+            target: 'https://generativelanguage.googleapis.com',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/api/, ''),
+            configure: (proxy, options) => {
+              proxy.on('proxyReq', (proxyReq, req, res) => {
+                proxyReq.setHeader('x-goog-api-key', env.GEMINI_API_KEY || '');
+              });
+            }
+          }
+        }
       },
       plugins: [react()],
-      define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
-      },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
