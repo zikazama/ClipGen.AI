@@ -54,7 +54,7 @@ async function decodeAudioData(
   return buffer;
 }
 
-const VideoGeneratorApp = () => {
+export const VideoGeneratorApp = () => {
   // --- State ---
   
   // Inputs
@@ -888,5 +888,8 @@ const VideoGeneratorApp = () => {
   );
 };
 
-const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
-root.render(<VideoGeneratorApp />);
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement as HTMLElement);
+  root.render(<VideoGeneratorApp />);
+}
