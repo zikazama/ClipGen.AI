@@ -3,6 +3,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
+}
+
 const loadingSteps = [
   "Initializing Veo 3.1 model",
   "Analyzing inputs & vectors",
@@ -336,7 +345,11 @@ const VideoGeneratorApp = () => {
 
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
       if (downloadLink) {
-        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+        const response = await fetch(`${downloadLink}`, {
+          headers: {
+            'x-goog-api-key': process.env.API_KEY as string,
+          },
+        });
         const videoBlob = await response.blob();
         const url = URL.createObjectURL(videoBlob);
         
