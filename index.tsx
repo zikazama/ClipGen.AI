@@ -3,6 +3,16 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => void;
+      fetch: typeof fetch;
+    };
+  }
+}
+
 const loadingSteps = [
   "Initializing Veo 3.1 model",
   "Analyzing inputs & vectors",
@@ -23,6 +33,9 @@ const AVAILABLE_MODELS = [
   { id: 'veo-3.1-fast-generate-preview', name: 'Veo 3.1 Fast', description: 'Optimized for speed and quick previews.' },
   { id: 'veo-3.1-generate-preview', name: 'Veo 3.1 High Quality', description: 'Highest fidelity and cinematic detail.' }
 ];
+
+const CREDIT_COST_720P = 100;
+const CREDIT_COST_1080P = 150;
 
 // Audio Decoding Helpers for TTS
 function decode(base64: string) {
@@ -148,7 +161,7 @@ const VideoGeneratorApp = () => {
   const currentPack = creditPacks[activePackIndex];
 
   // --- Derived State ---
-  const estimatedCost = resolution === '720p' ? 100 : 150;
+  const estimatedCost = resolution === '720p' ? CREDIT_COST_720P : CREDIT_COST_1080P;
 
   // --- Effects ---
 
