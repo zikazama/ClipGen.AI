@@ -3,6 +3,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    }
+  }
+}
+
 const loadingSteps = [
   "Initializing Veo 3.1 model",
   "Analyzing inputs & vectors",
@@ -26,6 +35,12 @@ const AVAILABLE_MODELS = [
 
 // Audio Decoding Helpers for TTS
 function decode(base64: string) {
+  if (typeof (Uint8Array as any).fromBase64 === 'function') {
+    return (Uint8Array as any).fromBase64(base64);
+  }
+  if (typeof Buffer !== 'undefined' && typeof Buffer.from === 'function') {
+    return Uint8Array.from(Buffer.from(base64, 'base64'));
+  }
   const binaryString = atob(base64);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
