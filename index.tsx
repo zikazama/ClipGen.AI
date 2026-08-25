@@ -3,6 +3,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+    };
+  }
+}
+
 const loadingSteps = [
   "Initializing Veo 3.1 model",
   "Analyzing inputs & vectors",
@@ -33,6 +42,15 @@ function decode(base64: string) {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
+}
+
+let sharedAudioCtx: AudioContext | null = null;
+
+function getAudioContext() {
+  if (!sharedAudioCtx) {
+    sharedAudioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+  }
+  return sharedAudioCtx;
 }
 
 async function decodeAudioData(
@@ -254,7 +272,7 @@ const VideoGeneratorApp = () => {
 
       const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
       if (base64Audio) {
-          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+          const audioCtx = getAudioContext();
           const decodedBytes = decode(base64Audio);
           const audioBuffer = await decodeAudioData(decodedBytes, audioCtx, 24000, 1);
           const source = audioCtx.createBufferSource();
