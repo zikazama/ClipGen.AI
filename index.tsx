@@ -3,6 +3,18 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+declare global {
+  interface Window {
+    aistudio?: {
+      hasSelectedApiKey: () => Promise<boolean>;
+      openSelectKey: () => Promise<void>;
+      fetch: typeof fetch;
+    };
+    webkitAudioContext?: typeof AudioContext;
+  }
+}
+
+
 const loadingSteps = [
   "Initializing Veo 3.1 model",
   "Analyzing inputs & vectors",
@@ -54,7 +66,7 @@ async function decodeAudioData(
   return buffer;
 }
 
-const VideoGeneratorApp = () => {
+export const VideoGeneratorApp = () => {
   // --- State ---
   
   // Inputs
@@ -888,5 +900,7 @@ const VideoGeneratorApp = () => {
   );
 };
 
-const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
-root.render(<VideoGeneratorApp />);
+if (typeof document !== 'undefined' && document.getElementById('root')) {
+  const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement);
+  root.render(<VideoGeneratorApp />);
+}
