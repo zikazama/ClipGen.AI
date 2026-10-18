@@ -1,6 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
+import { decode, decodeAudioData, getAudioContext, errorMessage } from './utils';
 
 const loadingSteps = [
   "Initializing Veo 3.1 model",
@@ -19,69 +20,29 @@ interface HistoryItem {
   config: string;
 }
 
+// API payloads (see server/index.js)
+interface ImageInput { imageBytes: string; mimeType: string; }
+interface GenerateVideosPayload {
+  model: string;
+  prompt: string;
+  image?: ImageInput;
+  config: {
+    numberOfVideos: number;
+    resolution: '720p' | '1080p';
+    aspectRatio: '16:9' | '9:16';
+    durationSeconds: number;
+    lastFrame?: ImageInput;
+  };
+}
+interface ApiError { error?: string; }
+interface GenerateResponse extends ApiError { name?: string; durationSeconds?: number; }
+interface StatusResponse extends ApiError { done?: boolean; }
+interface TtsResponse extends ApiError { audio?: string; }
+
 const AVAILABLE_MODELS = [
   { id: 'veo-3.1-fast-generate-001', name: 'Veo 3.1 Fast', description: 'Optimized for speed and quick previews.' },
   { id: 'veo-3.1-generate-001', name: 'Veo 3.1 High Quality', description: 'Highest fidelity and cinematic detail.' }
 ];
-
-// Audio Decoding Helpers for TTS
-function decode(base64: string) {
-  return Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-}
-
-async function decodeAudioData(
-  data: Uint8Array,
-  ctx: AudioContext,
-  sampleRate: number,
-  numChannels: number,
-): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
-  const frameCount = dataInt16.length / numChannels;
-  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
-
-  return new Promise((resolve, reject) => {
-    const workerCode = `
-      self.onmessage = function(e) {
-        const { dataInt16, numChannels, frameCount } = e.data;
-        const channels = new Array(numChannels);
-        for (let channel = 0; channel < numChannels; channel++) {
-          const channelData = new Float32Array(frameCount);
-          for (let i = 0; i < frameCount; i++) {
-            channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
-          }
-          channels[channel] = channelData;
-        }
-
-        self.postMessage({ channels }, channels.map(c => c.buffer));
-      };
-    `;
-
-    const blob = new Blob([workerCode], { type: 'application/javascript' });
-    const workerUrl = URL.createObjectURL(blob);
-    const worker = new Worker(workerUrl);
-
-    worker.onmessage = (e) => {
-      const { channels } = e.data;
-      for (let channel = 0; channel < numChannels; channel++) {
-        buffer.copyToChannel(channels[channel], channel);
-      }
-      worker.terminate();
-      URL.revokeObjectURL(workerUrl);
-      resolve(buffer);
-    };
-
-    worker.onerror = (err) => {
-      worker.terminate();
-      URL.revokeObjectURL(workerUrl);
-      reject(err);
-    };
-
-    // To avoid copying the entire dataInt16 array on message passing (since dataInt16.buffer might be shared if it comes from a larger buffer or not, but here it's created via base64, so it's a new ArrayBuffer), we can transfer it if we don't need it on the main thread anymore, but it's okay to just copy it or pass it.
-    // wait, we can't transfer data.buffer if it's used elsewhere, but dataInt16 is just a view.
-    // Let's copy it for simplicity and safety or just pass the Int16Array (it gets cloned).
-    worker.postMessage({ dataInt16, numChannels, frameCount });
-  });
-}
 
 // --- Persistence helpers (history in IndexedDB, pending job in localStorage) ---
 
@@ -308,21 +269,6 @@ const VideoGeneratorApp = () => {
 
   // --- Handlers ---
 
-  const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          resolve(reader.result.split(',')[1]);
-        } else {
-          reject('Failed to convert blob to base64');
-        }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  };
-
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'start' | 'end') => {
     const file = e.target.files?.[0];
     e.target.value = '';
@@ -362,19 +308,19 @@ const VideoGeneratorApp = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt }),
       });
-      const ttsData: any = await ttsRes.json().catch(() => ({}));
+      const ttsData: TtsResponse = await ttsRes.json().catch(() => ({}));
       if (!ttsRes.ok || !ttsData.audio) {
         throw new Error(ttsData.error || `TTS failed (${ttsRes.status}).`);
       }
 
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+      const audioCtx = getAudioContext();
       const decodedBytes = decode(ttsData.audio);
-      const audioBuffer = await decodeAudioData(decodedBytes, audioCtx, 24000, 1);
+      const audioBuffer = decodeAudioData(decodedBytes, audioCtx, 24000, 1);
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
       source.start();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("TTS Error:", err);
       setError("Text-to-speech failed. Please try again.");
     } finally {
@@ -400,7 +346,7 @@ const VideoGeneratorApp = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: job.name }),
         });
-        const statusData: any = await statusRes.json().catch(() => ({}));
+        const statusData: StatusResponse = await statusRes.json().catch(() => ({}));
         if (!statusRes.ok) {
           throw new Error(statusData.error || `Status check failed (${statusRes.status}).`);
         }
@@ -409,7 +355,7 @@ const VideoGeneratorApp = () => {
         }
         done = !!statusData.done;
         failures = 0;
-      } catch (err: any) {
+      } catch (err: unknown) {
         // Tolerate brief network blips; surface real errors.
         if (err instanceof TypeError && ++failures < 5) continue;
         throw err;
@@ -422,7 +368,7 @@ const VideoGeneratorApp = () => {
       body: JSON.stringify({ name: job.name }),
     });
     if (!videoRes.ok) {
-      const videoErr: any = await videoRes.json().catch(() => ({}));
+      const videoErr: ApiError = await videoRes.json().catch(() => ({}));
       throw new Error(videoErr.error || `Failed to download video (${videoRes.status}).`);
     }
     const videoBlob = await videoRes.blob();
@@ -451,9 +397,9 @@ const VideoGeneratorApp = () => {
 
     try {
       await waitForVideo(job);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
-      setError(e?.message || 'An unexpected error occurred.');
+      setError(errorMessage(e));
     } finally {
       clearPending();
       clearInterval(stepInterval);
@@ -471,7 +417,7 @@ const VideoGeneratorApp = () => {
       return;
     }
 
-    const payload: any = {
+    const payload: GenerateVideosPayload = {
       model: selectedModel.id,
       prompt: prompt || "A high quality video",
       config: {
@@ -498,7 +444,7 @@ const VideoGeneratorApp = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const startData: any = await startRes.json().catch(() => ({}));
+      const startData: GenerateResponse = await startRes.json().catch(() => ({}));
       if (!startRes.ok || !startData.name) {
         throw new Error(startData.error || `Failed to start generation (${startRes.status}).`);
       }
@@ -510,9 +456,9 @@ const VideoGeneratorApp = () => {
       };
       writePending(job);
       await runJob(job);
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(e);
-      setError(e?.message || 'An unexpected error occurred.');
+      setError(errorMessage(e));
       setLoading(false);
     }
   };
