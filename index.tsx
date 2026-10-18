@@ -1,7 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
-import { GoogleGenAI, Modality } from '@google/genai';
 
 const loadingSteps = [
   "Initializing Veo 3.1 model",
@@ -13,6 +12,7 @@ const loadingSteps = [
 ];
 
 interface HistoryItem {
+  id: number;
   prompt: string;
   videoUrl: string;
   timestamp: number;
@@ -20,8 +20,8 @@ interface HistoryItem {
 }
 
 const AVAILABLE_MODELS = [
-  { id: 'veo-3.1-fast-generate-preview', name: 'Veo 3.1 Fast', description: 'Optimized for speed and quick previews.' },
-  { id: 'veo-3.1-generate-preview', name: 'Veo 3.1 High Quality', description: 'Highest fidelity and cinematic detail.' }
+  { id: 'veo-3.1-fast-generate-001', name: 'Veo 3.1 Fast', description: 'Optimized for speed and quick previews.' },
+  { id: 'veo-3.1-generate-001', name: 'Veo 3.1 High Quality', description: 'Highest fidelity and cinematic detail.' }
 ];
 
 // Audio Decoding Helpers for TTS
@@ -54,6 +54,88 @@ async function decodeAudioData(
   return buffer;
 }
 
+// --- Persistence helpers (history in IndexedDB, pending job in localStorage) ---
+
+const DB_NAME = 'clipgen';
+const STORE = 'videos';
+const MAX_HISTORY = 20;
+const PENDING_KEY = 'clipgen.pending';
+const PENDING_TTL_MS = 30 * 60 * 1000;
+
+interface StoredVideo { id: number; prompt: string; config: string; blob: Blob; }
+interface PendingJob { name: string; prompt: string; config: string; startedAt: number; }
+
+const openDb = (): Promise<IDBDatabase> =>
+  new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(STORE, { keyPath: 'id' });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+
+const idbDone = (tx: IDBTransaction) =>
+  new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+
+async function loadStoredVideos(): Promise<StoredVideo[]> {
+  const db = await openDb();
+  const items = await new Promise<StoredVideo[]>((resolve, reject) => {
+    const req = db.transaction(STORE).objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result as StoredVideo[]);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  return items.sort((a, b) => b.id - a.id);
+}
+
+async function saveStoredVideo(item: StoredVideo): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(STORE, 'readwrite');
+  const store = tx.objectStore(STORE);
+  store.put(item);
+  const keysReq = store.getAllKeys();
+  keysReq.onsuccess = () => {
+    const keys = (keysReq.result as number[]).sort((a, b) => b - a);
+    keys.slice(MAX_HISTORY).forEach(k => store.delete(k));
+  };
+  await idbDone(tx);
+  db.close();
+}
+
+const readPending = (): PendingJob | null => {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    if (!raw) return null;
+    const job = JSON.parse(raw) as PendingJob;
+    return Date.now() - job.startedAt < PENDING_TTL_MS ? job : null;
+  } catch { return null; }
+};
+const writePending = (job: PendingJob) => { try { localStorage.setItem(PENDING_KEY, JSON.stringify(job)); } catch {} };
+const clearPending = () => { try { localStorage.removeItem(PENDING_KEY); } catch {} };
+
+// Downscale large images client-side so uploads stay small and within request limits.
+async function prepareImage(file: File, maxSide = 1920): Promise<{ file: File; base64: string }> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const blob: Blob = await new Promise((resolve, reject) =>
+    canvas.toBlob(b => (b ? resolve(b) : reject(new Error('Image conversion failed.'))), 'image/jpeg', 0.9));
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+  return { file: new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' }), base64 };
+}
+
 const VideoGeneratorApp = () => {
   // --- State ---
   
@@ -67,7 +149,7 @@ const VideoGeneratorApp = () => {
   // Configuration
   const [selectedModel, setSelectedModel] = useState(AVAILABLE_MODELS[0]);
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
-  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16' | '1:1'>('16:9');
+  const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
   const [resolution, setResolution] = useState<'720p' | '1080p'>('720p');
   const [duration, setDuration] = useState<number>(8);
 
@@ -83,7 +165,6 @@ const VideoGeneratorApp = () => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   
   // Auth & System
-  const [apiKeySelected, setApiKeySelected] = useState<boolean>(false);
   const [isPricingOpen, setIsPricingOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
@@ -148,18 +229,13 @@ const VideoGeneratorApp = () => {
   const currentPack = creditPacks[activePackIndex];
 
   // --- Derived State ---
-  const estimatedCost = resolution === '720p' ? 100 : 150;
+  // Veo 3.1 only supports 8s clips at 1080p or with first/last-frame interpolation.
+  const durationLocked = resolution === '1080p' || !!endFrame;
+  const effectiveDuration = durationLocked ? 8 : duration;
 
   // --- Effects ---
 
   useEffect(() => {
-    const checkApiKey = async () => {
-      if (window.aistudio && await window.aistudio.hasSelectedApiKey()) {
-        setApiKeySelected(true);
-      }
-    };
-    checkApiKey();
-
     // Close dropdown on outside click
     const handleClickOutside = (event: MouseEvent) => {
       if (modelDropdownRef.current && !modelDropdownRef.current.contains(event.target as Node)) {
@@ -170,6 +246,22 @@ const VideoGeneratorApp = () => {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Restore saved library and resume an interrupted generation after a refresh.
+  useEffect(() => {
+    let cancelled = false;
+    loadStoredVideos()
+      .then(items => {
+        if (cancelled) return;
+        setHistory(items.map(v => ({
+          id: v.id, prompt: v.prompt, config: v.config, timestamp: v.id,
+          videoUrl: URL.createObjectURL(v.blob),
+        })));
+      })
+      .catch(() => {});
+    const pending = readPending();
+    if (pending) runJob(pending);
+    return () => { cancelled = true; };
+  }, []);
   // Auto-scroll to result on mobile when videoUrl changes
   useEffect(() => {
     if (videoUrl && window.innerWidth <= 768) {
@@ -186,13 +278,6 @@ const VideoGeneratorApp = () => {
   }, [videoUrl]);
 
   // --- Handlers ---
-
-  const handleSelectKey = async () => {
-    if (window.aistudio) {
-      await window.aistudio.openSelectKey();
-      setApiKeySelected(true);
-    }
-  };
 
   const blobToBase64 = (blob: Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -211,16 +296,21 @@ const VideoGeneratorApp = () => {
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>, type: 'start' | 'end') => {
     const file = e.target.files?.[0];
+    e.target.value = '';
     if (file && file.type.startsWith('image/')) {
-      const base64 = await blobToBase64(file);
-      if (type === 'start') {
-        setStartFrame(file);
-        setStartFrameBase64(base64);
-      } else {
-        setEndFrame(file);
-        setEndFrameBase64(base64);
+      try {
+        const { file: prepared, base64 } = await prepareImage(file);
+        if (type === 'start') {
+          setStartFrame(prepared);
+          setStartFrameBase64(base64);
+        } else {
+          setEndFrame(prepared);
+          setEndFrameBase64(base64);
+        }
+        setError('');
+      } catch {
+        setError('Could not read that image. Try a PNG or JPEG file.');
       }
-      setError('');
     }
   };
 
@@ -238,30 +328,23 @@ const VideoGeneratorApp = () => {
     if (!prompt) return;
     setTtsLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: prompt }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: 'Kore' },
-              },
-          },
-        },
+      const ttsRes = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
       });
-
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-      if (base64Audio) {
-          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
-          const decodedBytes = decode(base64Audio);
-          const audioBuffer = await decodeAudioData(decodedBytes, audioCtx, 24000, 1);
-          const source = audioCtx.createBufferSource();
-          source.buffer = audioBuffer;
-          source.connect(audioCtx.destination);
-          source.start();
+      const ttsData: any = await ttsRes.json().catch(() => ({}));
+      if (!ttsRes.ok || !ttsData.audio) {
+        throw new Error(ttsData.error || `TTS failed (${ttsRes.status}).`);
       }
+
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({sampleRate: 24000});
+      const decodedBytes = decode(ttsData.audio);
+      const audioBuffer = await decodeAudioData(decodedBytes, audioCtx, 24000, 1);
+      const source = audioCtx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioCtx.destination);
+      source.start();
     } catch (err: any) {
       console.error("TTS Error:", err);
       setError("Text-to-speech failed. Please try again.");
@@ -270,108 +353,140 @@ const VideoGeneratorApp = () => {
     }
   };
 
-  const generateVideo = async () => {
-    if (!apiKeySelected) {
-      setError("Please connect your Vertex AI API Key.");
-      return;
-    }
-    if (!prompt && !startFrame) {
-      setError("Please enter a prompt or upload a start frame.");
-      return;
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  // Polls an operation until done, downloads the video, stores it in history.
+  const waitForVideo = async (job: PendingJob) => {
+    const deadline = job.startedAt + 12 * 60 * 1000;
+    let done = false;
+    let failures = 0;
+    while (!done) {
+      if (Date.now() > deadline) {
+        throw new Error('Generation timed out. Please try again.');
+      }
+      await sleep(5000);
+      try {
+        const statusRes = await fetch('/api/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: job.name }),
+        });
+        const statusData: any = await statusRes.json().catch(() => ({}));
+        if (!statusRes.ok) {
+          throw new Error(statusData.error || `Status check failed (${statusRes.status}).`);
+        }
+        if (statusData.error) {
+          throw new Error(statusData.error);
+        }
+        done = !!statusData.done;
+        failures = 0;
+      } catch (err: any) {
+        // Tolerate brief network blips; surface real errors.
+        if (err instanceof TypeError && ++failures < 5) continue;
+        throw err;
+      }
     }
 
+    const videoRes = await fetch('/api/video', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: job.name }),
+    });
+    if (!videoRes.ok) {
+      const videoErr: any = await videoRes.json().catch(() => ({}));
+      throw new Error(videoErr.error || `Failed to download video (${videoRes.status}).`);
+    }
+    const videoBlob = await videoRes.blob();
+    const url = URL.createObjectURL(videoBlob);
+    const id = Date.now();
+
+    setCurrentStep(loadingSteps.length - 1);
+    setVideoUrl(url);
+    setHistory(prev => [{ id, prompt: job.prompt, videoUrl: url, timestamp: id, config: job.config }, ...prev].slice(0, MAX_HISTORY));
+    saveStoredVideo({ id, prompt: job.prompt, config: job.config, blob: videoBlob }).catch(() => {});
+  };
+
+  // Runs a job with the loading UI; always clears the pending marker when it ends.
+  const runJob = async (job: PendingJob) => {
     setLoading(true);
     setCurrentStep(0);
     setError('');
     setActiveTab('canvas');
     setVideoUrl(null);
-    
-    // Cycle steps simulation
+
     let stepIdx = 0;
     const stepInterval = setInterval(() => {
-        stepIdx++;
-        if (stepIdx < loadingSteps.length) {
-            setCurrentStep(stepIdx);
-        }
-    }, 4500); // Slower interval to match typical generation time
+      stepIdx++;
+      if (stepIdx < loadingSteps.length - 1) setCurrentStep(stepIdx);
+    }, 4500);
 
     try {
-      // Create a new instance right before use to ensure the latest API key is used
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      
-      const config: any = {
-        numberOfVideos: 1,
-        resolution: resolution,
-        aspectRatio: aspectRatio,
-      };
-
-      // Handle End Frame (lastFrame)
-      if (endFrameBase64 && endFrame) {
-        config.lastFrame = {
-            imageBytes: endFrameBase64,
-            mimeType: endFrame.type,
-        };
-      }
-
-      const payload: any = {
-        model: selectedModel.id,
-        prompt: prompt || "A high quality video", // Fallback if user only provides image
-        config: config
-      };
-
-      // Handle Start Frame (image)
-      if (startFrameBase64 && startFrame) {
-        payload.image = {
-            imageBytes: startFrameBase64,
-            mimeType: startFrame.type,
-        };
-      }
-
-      let operation = await ai.models.generateVideos(payload);
-
-      while (!operation.done) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        operation = await ai.operations.getVideosOperation({ operation });
-      }
-
-      const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      if (downloadLink) {
-        const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
-        const videoBlob = await response.blob();
-        const url = URL.createObjectURL(videoBlob);
-        
-        // Force complete step visual
-        setCurrentStep(loadingSteps.length - 1);
-        
-        setVideoUrl(url);
-        setHistory(prev => [{
-            prompt: prompt || (startFrame ? "Image to Video" : "Generated Video"),
-            videoUrl: url,
-            timestamp: Date.now(),
-            config: `${resolution} • ${aspectRatio} • ${duration}s`
-        }, ...prev]);
-
-      } else {
-        throw new Error("Video generation completed, but no download link was found.");
-      }
-
+      await waitForVideo(job);
     } catch (e: any) {
       console.error(e);
-      let errorMessage = 'An unexpected error occurred.';
-      if (e.message) {
-        errorMessage = e.message;
-      }
-      if (errorMessage.includes("Requested entity was not found")) {
-          errorMessage = "Your API key is invalid or lacks Vertex AI access.";
-          setApiKeySelected(false);
-      }
-      setError(errorMessage);
+      setError(e?.message || 'An unexpected error occurred.');
     } finally {
+      clearPending();
       clearInterval(stepInterval);
       setLoading(false);
     }
   };
 
+  const generateVideo = async () => {
+    if (!prompt && !startFrame) {
+      setError("Please enter a prompt or upload a start frame.");
+      return;
+    }
+    if (endFrame && !startFrame) {
+      setError("An end frame needs a start frame too.");
+      return;
+    }
+
+    const payload: any = {
+      model: selectedModel.id,
+      prompt: prompt || "A high quality video",
+      config: {
+        numberOfVideos: 1,
+        resolution: resolution,
+        aspectRatio: aspectRatio,
+        durationSeconds: effectiveDuration,
+      },
+    };
+    if (startFrameBase64 && startFrame) {
+      payload.image = { imageBytes: startFrameBase64, mimeType: startFrame.type };
+    }
+    if (endFrameBase64 && endFrame) {
+      payload.config.lastFrame = { imageBytes: endFrameBase64, mimeType: endFrame.type };
+    }
+
+    setLoading(true);
+    setError('');
+    setActiveTab('canvas');
+    setVideoUrl(null);
+    try {
+      const startRes = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const startData: any = await startRes.json().catch(() => ({}));
+      if (!startRes.ok || !startData.name) {
+        throw new Error(startData.error || `Failed to start generation (${startRes.status}).`);
+      }
+      const job: PendingJob = {
+        name: startData.name,
+        prompt: prompt || (startFrame ? "Image to Video" : "Generated Video"),
+        config: `${resolution} • ${aspectRatio} • ${startData.durationSeconds ?? effectiveDuration}s`,
+        startedAt: Date.now(),
+      };
+      writePending(job);
+      await runJob(job);
+    } catch (e: any) {
+      console.error(e);
+      setError(e?.message || 'An unexpected error occurred.');
+      setLoading(false);
+    }
+  };
   const handleDownload = () => {
     if (!videoUrl) return;
     const a = document.createElement('a');
@@ -535,9 +650,16 @@ const VideoGeneratorApp = () => {
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                     Duration
                 </div>
-                <div className="setting-control">
-                    {duration}s
-                    {/* Simplified for UI - in real app could be dropdown */}
+                <div
+                    className="setting-control"
+                    title={durationLocked ? 'Fixed at 8s for 1080p or when an end frame is used' : 'Click to change'}
+                    style={durationLocked ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}
+                    onClick={() => { if (!durationLocked) setDuration(prev => (prev === 4 ? 6 : prev === 6 ? 8 : 4)); }}
+                >
+                    {effectiveDuration}s
+                    {!durationLocked && (
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                    )}
                 </div>
             </div>
             <div className="setting-item">
@@ -565,7 +687,7 @@ const VideoGeneratorApp = () => {
 
       <div className="config-footer">
         {error && <div className="error-banner">{error}</div>}
-        <button className="generate-btn" onClick={generateVideo} disabled={loading || !apiKeySelected}>
+        <button className="generate-btn" onClick={generateVideo} disabled={loading}>
             {loading ? (
                 <>
                   Generating...
@@ -573,7 +695,7 @@ const VideoGeneratorApp = () => {
             ) : (
                 <>
                     <span style={{ marginRight: '6px' }}>✨</span> 
-                    Generate • {estimatedCost} Credits
+                    Generate
                 </>
             )}
         </button>
@@ -651,8 +773,8 @@ const VideoGeneratorApp = () => {
                         <p>No history yet.</p>
                     </div>
                 ) : (
-                    history.map((item, idx) => (
-                        <div key={idx} className="history-card" onClick={() => { setVideoUrl(item.videoUrl); setActiveTab('canvas'); }}>
+                    history.map((item) => (
+                        <div key={item.id} className="history-card" onClick={() => { setVideoUrl(item.videoUrl); setActiveTab('canvas'); }}>
                             <div className="history-thumbnail">
                                 <video src={item.videoUrl} style={{ width: '100%', height: '100%', objectFit: 'cover' }} muted onMouseOver={e => e.currentTarget.play()} onMouseOut={e => e.currentTarget.pause()} />
                             </div>
@@ -674,18 +796,6 @@ const VideoGeneratorApp = () => {
       {renderIconSidebar()}
       {renderConfigPanel()}
       {renderCanvas()}
-
-      {!apiKeySelected && (
-         <div className="modal-overlay">
-            <div className="modal-content">
-                <h2>Connect Vertex AI</h2>
-                <p style={{ color: '#a1a1aa', marginTop: 12, lineHeight: 1.5 }}>
-                    To use Veo 3.1, you need to connect your Google Cloud API Key with Vertex AI enabled.
-                </p>
-                <button className="btn-primary" onClick={handleSelectKey}>Connect API Key</button>
-            </div>
-         </div>
-      )}
 
       {isPricingOpen && (
           <div className="modal-overlay" onClick={(e) => { if(e.target === e.currentTarget) setIsPricingOpen(false) }}>
@@ -769,7 +879,7 @@ const VideoGeneratorApp = () => {
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
                             </button>
                         </div>
-                        <button className="btn-primary subscribe-btn">Subscribe to {currentPlan.name.split(' ')[0]}</button>
+                        <button className="btn-primary subscribe-btn" disabled style={{ opacity: 0.6, cursor: 'not-allowed' }}>Coming soon</button>
                     </>
                   )}
 
@@ -806,7 +916,7 @@ const VideoGeneratorApp = () => {
                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6"></polyline></svg>
                             </button>
                         </div>
-                        <button className="btn-primary subscribe-btn">Buy {currentPack.credits.toLocaleString()} Credits</button>
+                        <button className="btn-primary subscribe-btn" disabled style={{ opacity: 0.6, cursor: 'not-allowed' }}>Coming soon</button>
                     </>
                   )}
 
@@ -835,7 +945,10 @@ const VideoGeneratorApp = () => {
                         <label className="form-label">Password</label>
                         <input type="password" className="form-input" placeholder="••••••••" />
                     </div>
-                    <button className="btn-primary" style={{ width: '100%', marginTop: 8 }} onClick={() => setIsProfileOpen(false)}>
+                    <p style={{ color: '#a1a1aa', fontSize: 12, margin: '0 0 4px' }}>
+                        Accounts are not available yet. You can generate videos without signing in.
+                    </p>
+                    <button className="btn-primary" disabled style={{ width: '100%', marginTop: 8, opacity: 0.6, cursor: 'not-allowed' }}>
                         {authMode === 'signin' ? 'Sign In' : 'Sign Up'}
                     </button>
                     
@@ -858,11 +971,12 @@ const VideoGeneratorApp = () => {
                             color: '#fff',
                             padding: '12px',
                             borderRadius: '8px',
-                            cursor: 'pointer',
+                            cursor: 'not-allowed',
+                            opacity: 0.6,
                             fontSize: '14px',
                             fontWeight: '500'
                         }}
-                        onClick={() => setIsProfileOpen(false)}
+                        disabled
                     >
                         <svg width="18" height="18" viewBox="0 0 24 24">
                             <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
