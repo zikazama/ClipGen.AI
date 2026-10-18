@@ -6,8 +6,10 @@ import * as veo from './veo.js';
 import { synthesizeSpeech } from './gemini.js';
 import { finalizeVideo } from './media.js';
 import {
-  MODELS, LENGTHS, EXTENSION_SECONDS, VOICES, IMAGE_MIMES, MAX_IMAGE_BYTES,
+  MODELS, LENGTHS, GUEST_MODEL, GUEST_MAX_LENGTH, VOICES, IMAGE_MIMES, MAX_IMAGE_BYTES, LANGUAGES, PLATFORMS, SPEECH_STYLES,
 } from './config.js';
+import { estimateCost } from './pricing.js';
+import { getKit, readLogo } from './brand.js';
 import { guardGeneration } from './limits.js';
 
 const LOCK_MS = 120_000;
@@ -15,7 +17,7 @@ const SIGNED_URL_TTL_MS = 60 * 60 * 1000;
 const jobs = () => db.collection('jobs');
 const clips = (uid) => db.collection('users').doc(uid).collection('clips');
 
-function parseImage(img, label) {
+export function parseImage(img, label) {
   if (!img) return null;
   if (typeof img.imageBytes !== 'string' || !img.imageBytes.length) throw new HttpError(400, `Invalid ${label}.`);
   if (!IMAGE_MIMES.has(img.mimeType)) throw new HttpError(400, `${label} must be PNG, JPEG or WebP.`);
@@ -23,7 +25,7 @@ function parseImage(img, label) {
   return { imageBytes: img.imageBytes, mimeType: img.mimeType };
 }
 
-function validate(body) {
+function validate(body, user) {
   const model = MODELS[body.model] ? body.model : null;
   if (!model) throw new HttpError(400, 'Model not allowed.');
 
@@ -36,6 +38,9 @@ function validate(body) {
   const length = Number(body.length);
   const plan = LENGTHS[length];
   if (!plan) throw new HttpError(400, 'Unsupported length.');
+  if (user?.guest && (model !== GUEST_MODEL || length > GUEST_MAX_LENGTH)) {
+    throw new HttpError(403, 'Guests can make one Fast draft up to 8 seconds a day. Sign in to unlock HQ and longer clips.');
+  }
   if (lastFrame && plan.base !== 8) throw new HttpError(400, 'An end frame needs a clip length of 8s or more.');
 
   // Veo 3.1: 1080p and first/last-frame interpolation only support 8s base clips.
@@ -46,28 +51,47 @@ function validate(body) {
     narration = {
       text: body.narration.text.slice(0, 600).trim(),
       voice: VOICES.has(body.narration.voice) ? body.narration.voice : 'Kore',
+      style: SPEECH_STYLES[body.narration.style] !== undefined ? body.narration.style : 'neutral',
+    };
+  }
+
+  // Optional product-ad metadata produced by the creative director (stored with the clip).
+  let ad = null;
+  if (body.ad && typeof body.ad === 'object') {
+    const str = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
+    ad = {
+      brief: str(body.ad.brief, 400),
+      caption: str(body.ad.caption, 300),
+      hashtags: (Array.isArray(body.ad.hashtags) ? body.ad.hashtags : []).map((h) => str(h, 30)).filter(Boolean).slice(0, 8),
+      language: LANGUAGES[body.ad.language] ? body.ad.language : null,
+      platform: PLATFORMS.has(body.ad.platform) ? body.ad.platform : null,
+      directed: body.ad.directed === true,
     };
   }
 
   return {
     model,
     prompt: prompt || 'A high quality cinematic video',
-    image, lastFrame, length, plan, resolution, narration,
+    image, lastFrame, length, plan, resolution, narration, ad, sound: body.sound !== false,
+    brandKitId: typeof body.brandKitId === 'string' ? body.brandKitId.slice(0, 64) : null,
+    useLogo: body.useLogo === true,
     aspectRatio: body.aspectRatio === '9:16' ? '9:16' : '16:9',
     preset: typeof body.preset === 'string' ? body.preset.slice(0, 60) : null,
   };
 }
 
 export async function createJob(req) {
-  const v = validate(req.body || {});
-  const generatedSeconds = v.plan.base + v.plan.extensions * EXTENSION_SECONDS;
-  const costUsd = generatedSeconds * MODELS[v.model].usdPerSec[v.resolution];
-  await guardGeneration(req, { seconds: generatedSeconds, costUsd });
+  const v = validate(req.body || {}, req.user);
+  const cost = estimateCost({ model: v.model, resolution: v.resolution, plan: v.plan, narration: !!v.narration, director: !!v.ad?.directed, sound: v.sound });
+  await guardGeneration(req, { seconds: cost.veoSeconds, costUsd: cost.totalUsd });
+
+  let kit = null;
+  if (v.brandKitId) kit = await getKit(req.user.uid, v.brandKitId);
 
   const id = crypto.randomUUID();
   const operation = await veo.startVideo({
     model: v.model, prompt: v.prompt, image: v.image, lastFrame: v.lastFrame,
-    aspectRatio: v.aspectRatio, resolution: v.resolution, durationSeconds: v.plan.base,
+    aspectRatio: v.aspectRatio, resolution: v.resolution, durationSeconds: v.plan.base, sound: v.sound,
     outputPrefix: `jobs/${id}/s0/`,
   });
 
@@ -82,8 +106,11 @@ export async function createJob(req) {
     createdAt: FieldValue.serverTimestamp(),
     params: {
       model: v.model, prompt: v.prompt, aspectRatio: v.aspectRatio, resolution: v.resolution,
-      length: v.length, extensions: v.plan.extensions, narration: v.narration, preset: v.preset,
-      hasImage: !!v.image, hasLastFrame: !!v.lastFrame, estimatedUsd: Number(costUsd.toFixed(2)),
+      length: v.length, extensions: v.plan.extensions, narration: v.narration, sound: v.sound, preset: v.preset,
+      hasImage: !!v.image, hasLastFrame: !!v.lastFrame, estimatedUsd: Number(cost.totalUsd.toFixed(2)),
+      cost, ad: v.ad,
+      brandKitId: kit ? kit.id : null,
+      logoPath: kit && v.useLogo && kit.logoPath ? kit.logoPath : null,
     },
   });
   return id;
@@ -135,10 +162,11 @@ async function readObject(uri) {
 async function finalize(id, job) {
   const { params } = job;
   const narrationPcm = params.narration
-    ? await synthesizeSpeech(params.narration.text, params.narration.voice)
+    ? await synthesizeSpeech(params.narration.text, params.narration.voice, params.narration.style)
     : null;
+  const logoPng = params.logoPath ? await readLogo({ logoPath: params.logoPath }) : null;
   const source = await readObject(job.currentUri);
-  const mp4 = await finalizeVideo({ videoBuffer: source, seconds: params.length, narrationPcm });
+  const mp4 = await finalizeVideo({ videoBuffer: source, seconds: params.length, narrationPcm, logoPng });
 
   const path = `final/${job.uid}/${id}.mp4`;
   await bucket.file(path).save(mp4, { contentType: 'video/mp4', resumable: false });
@@ -151,6 +179,11 @@ async function finalize(id, job) {
     aspectRatio: params.aspectRatio,
     length: params.length,
     narration: !!params.narration,
+    logo: !!params.logoPath,
+    costUsd: params.estimatedUsd,
+    cost: params.cost,
+    ad: params.ad || null,
+    brandKitId: params.brandKitId || null,
     bytes: mp4.length,
     createdAt: FieldValue.serverTimestamp(),
   });
@@ -181,6 +214,7 @@ export async function advanceJob(id, uid) {
           prompt: `${job.params.prompt} Continue the scene naturally and seamlessly.`.slice(0, 2000),
           video: op.uri,
           resolution: job.params.resolution,
+          sound: job.params.sound !== false,
           outputPrefix: `jobs/${id}/s${next}/`,
         });
         await jobs().doc(id).update({ stage: 'extend', extIndex: next, operation, currentUri: op.uri, lockUntil: 0 });
@@ -209,7 +243,8 @@ async function clipView(id, c) {
   return {
     id, url, downloadUrl,
     prompt: c.prompt, preset: c.preset, model: c.model, resolution: c.resolution,
-    aspectRatio: c.aspectRatio, length: c.length, narration: c.narration,
+    aspectRatio: c.aspectRatio, length: c.length, narration: c.narration, logo: !!c.logo,
+    costUsd: c.costUsd ?? null, ad: c.ad || null,
     createdAt: c.createdAt?.toMillis?.() || 0,
   };
 }

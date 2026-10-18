@@ -23,38 +23,73 @@ async function hasAudio(file) {
 }
 
 /**
- * Trims the clip to `seconds`, re-encodes to a web-friendly H.264/AAC MP4 and (optionally)
- * mixes a narration track over the clip's own sound, ducking the original.
+ * Builds the ffmpeg filter graph. Pure so it can be unit tested.
+ * Inputs are numbered in order: 0 = video, then narration (if any), then logo (if any).
  */
-export async function finalizeVideo({ videoBuffer, seconds, narrationPcm }) {
+export function buildFilterGraph({ narration, backgroundAudio, logo }) {
+  const filters = [];
+  let nextInput = 1;
+  const narrationIdx = narration ? nextInput++ : null;
+  const logoIdx = logo ? nextInput++ : null;
+
+  const video = { map: '0:v:0' };
+  if (logo) {
+    // Logo at 22% of the frame width, 4% margin, top-right, slightly translucent.
+    filters.push(
+      `[${logoIdx}:v][0:v]scale2ref=w=main_w*0.22:h=ow/mdar[lg][base]`,
+      '[lg]format=rgba,colorchannelmixer=aa=0.92[lga]',
+      '[base][lga]overlay=x=main_w-overlay_w-main_w*0.04:y=main_h*0.04:format=auto,format=yuv420p[v]'
+    );
+    video.map = '[v]';
+  }
+
+  let audioMap = ['-map', '0:a?'];
+  if (narration) {
+    if (backgroundAudio) {
+      filters.push(
+        '[0:a]volume=0.3[bg]',
+        `[${narrationIdx}:a]adelay=500|500,aresample=48000[vo]`,
+        '[bg][vo]amix=inputs=2:duration=first:normalize=0[a]'
+      );
+    } else {
+      filters.push(`[${narrationIdx}:a]adelay=500|500,aresample=48000[a]`);
+    }
+    audioMap = ['-map', '[a]'];
+  }
+  return { filters, videoMap: video.map, audioMap, narrationIdx, logoIdx };
+}
+
+/**
+ * Trims the clip to `seconds`, re-encodes to a web-friendly H.264/AAC MP4, optionally mixes a narration
+ * track (ducking the original sound) and optionally overlays a brand logo.
+ */
+export async function finalizeVideo({ videoBuffer, seconds, narrationPcm, logoPng }) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'clipgen-'));
   const input = path.join(dir, 'in.mp4');
   const output = path.join(dir, 'out.mp4');
   try {
     await fs.writeFile(input, videoBuffer);
     const args = ['-y', '-hide_banner', '-loglevel', 'error', '-i', input];
-    let audioMap = ['-map', '0:a?'];
-    const filters = [];
 
     if (narrationPcm) {
       const pcm = path.join(dir, 'narration.pcm');
       await fs.writeFile(pcm, narrationPcm);
       args.push('-f', 's16le', '-ar', '24000', '-ac', '1', '-i', pcm);
-      if (await hasAudio(input)) {
-        filters.push(
-          '[0:a]volume=0.3[bg]',
-          '[1:a]adelay=500|500,aresample=48000[vo]',
-          '[bg][vo]amix=inputs=2:duration=first:normalize=0[a]'
-        );
-      } else {
-        filters.push('[1:a]adelay=500|500,aresample=48000[a]');
-      }
-      audioMap = ['-map', '[a]'];
+    }
+    if (logoPng) {
+      const logo = path.join(dir, 'logo.png');
+      await fs.writeFile(logo, logoPng);
+      args.push('-i', logo);
     }
 
-    if (filters.length) args.push('-filter_complex', filters.join(';'));
+    const graph = buildFilterGraph({
+      narration: !!narrationPcm,
+      backgroundAudio: narrationPcm ? await hasAudio(input) : false,
+      logo: !!logoPng,
+    });
+    if (graph.filters.length) args.push('-filter_complex', graph.filters.join(';'));
     args.push(
-      '-map', '0:v:0', ...audioMap,
+      '-map', graph.videoMap, ...graph.audioMap,
       '-t', String(seconds),
       '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
       '-c:a', 'aac', '-b:a', '160k',

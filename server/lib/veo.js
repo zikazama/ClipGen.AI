@@ -15,7 +15,7 @@ async function call(url, data) {
 }
 
 /** Starts a Veo job. Output is written to gs://BUCKET/<outputPrefix>. Returns the operation name. */
-export async function startVideo({ model, prompt, image, lastFrame, video, aspectRatio, resolution, durationSeconds, outputPrefix }) {
+export async function startVideo({ model, prompt, image, lastFrame, video, aspectRatio, resolution, durationSeconds, sound = true, outputPrefix }) {
   const instance = { prompt };
   if (image) instance.image = { bytesBase64Encoded: image.imageBytes, mimeType: image.mimeType };
   if (lastFrame) instance.lastFrame = { bytesBase64Encoded: lastFrame.imageBytes, mimeType: lastFrame.mimeType };
@@ -25,7 +25,7 @@ export async function startVideo({ model, prompt, image, lastFrame, video, aspec
     storageUri: `gs://${BUCKET}/${outputPrefix}`,
     sampleCount: 1,
     resolution,
-    generateAudio: true,
+    generateAudio: sound,
   };
   // Extensions inherit aspect ratio and add a fixed number of seconds.
   if (!video) {
