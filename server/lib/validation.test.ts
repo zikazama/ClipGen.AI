@@ -124,6 +124,12 @@ describe('validate', () => {
     expect(v.ad?.language).toBeNull();
     expect(v.ad?.platform).toBeNull();
   });
+
+  it('keeps adult people out unless the caller asks for it', () => {
+    expect(validate({ ...base }, signedIn).personGeneration).toBe('dont_allow');
+    expect(validate({ ...base, personGeneration: 'allow_adult' }, signedIn).personGeneration).toBe('allow_adult');
+    expect(validate({ ...base, personGeneration: 'nonsense' }, signedIn).personGeneration).toBe('dont_allow');
+  });
 });
 
 describe('parseImage', () => {

@@ -15,7 +15,7 @@ async function call(url, data) {
 }
 
 /** Starts a Veo job. Output is written to gs://BUCKET/<outputPrefix>. Returns the operation name. */
-export async function startVideo({ model, prompt, image, lastFrame, video, aspectRatio, resolution, durationSeconds, sound = true, outputPrefix }) {
+export async function startVideo({ model, prompt, image, lastFrame, video, aspectRatio, resolution, durationSeconds, sound = true, personGeneration, outputPrefix }) {
   const instance = { prompt };
   if (image) instance.image = { bytesBase64Encoded: image.imageBytes, mimeType: image.mimeType };
   if (lastFrame) instance.lastFrame = { bytesBase64Encoded: lastFrame.imageBytes, mimeType: lastFrame.mimeType };
@@ -31,6 +31,8 @@ export async function startVideo({ model, prompt, image, lastFrame, video, aspec
   if (!video) {
     parameters.aspectRatio = aspectRatio;
     parameters.durationSeconds = durationSeconds;
+    // Only the opening clip can be told to include adult people.
+    if (personGeneration) parameters.personGeneration = personGeneration;
   }
   const data = await call(`${HOST}/${modelPath(model)}:predictLongRunning`, { instances: [instance], parameters });
   return data.name;

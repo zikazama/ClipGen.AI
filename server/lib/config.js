@@ -52,6 +52,9 @@ export const SPEECH_STYLES = {
 
 export const PLATFORMS = new Set(['tiktok', 'reels', 'shopee', 'shorts', 'feed']);
 
+// Veo can include adult people in the shot. Off by default; product ads do not need it.
+export const PERSON_GENERATION = new Set(['dont_allow', 'allow_adult']);
+
 // Average speaking rate measured on Gemini TTS output (~1.8 words/s); used to cap script length.
 export const WORDS_PER_SECOND = 1.7;
 export const maxScriptWords = (lengthSeconds) => Math.max(6, Math.floor((lengthSeconds - 1) * WORDS_PER_SECOND));

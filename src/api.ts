@@ -36,6 +36,8 @@ export interface CreateJobPayload {
   lastFrame?: ImageInput;
   narration?: { text: string; voice: string; style?: string } | null;
   sound?: boolean;
+  /** Whether Veo may include adult people in the shot. Defaults to 'dont_allow'. */
+  personGeneration?: 'dont_allow' | 'allow_adult';
   brandKitId?: string | null;
   useLogo?: boolean;
   ad?: {

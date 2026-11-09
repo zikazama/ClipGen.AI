@@ -29,6 +29,7 @@ export async function createJob(req) {
   const operation = await veo.startVideo({
     model: v.model, prompt: v.prompt, image: v.image, lastFrame: v.lastFrame,
     aspectRatio: v.aspectRatio, resolution: v.resolution, durationSeconds: v.plan.base, sound: v.sound,
+    personGeneration: v.personGeneration,
     outputPrefix: `jobs/${id}/s0/`,
   });
 
@@ -44,6 +45,7 @@ export async function createJob(req) {
     params: {
       model: v.model, prompt: v.prompt, aspectRatio: v.aspectRatio, resolution: v.resolution,
       length: v.length, extensions: v.plan.extensions, narration: v.narration, sound: v.sound, preset: v.preset,
+      personGeneration: v.personGeneration,
       hasImage: !!v.image, hasLastFrame: !!v.lastFrame, estimatedUsd: Number(cost.totalUsd.toFixed(2)),
       cost, ad: v.ad,
       brandKitId: kit ? kit.id : null,
