@@ -1,7 +1,7 @@
 import { HttpError } from './errors.js';
 import {
   MODELS, LENGTHS, GUEST_MODEL, GUEST_MAX_LENGTH, VOICES, IMAGE_MIMES, MAX_IMAGE_BYTES,
-  LANGUAGES, PLATFORMS, SPEECH_STYLES,
+  LANGUAGES, PLATFORMS, PERSON_GENERATION, SPEECH_STYLES,
 } from './config.js';
 
 /**
@@ -73,5 +73,6 @@ export function validate(body, user) {
     useLogo: body.useLogo === true,
     aspectRatio: body.aspectRatio === '9:16' ? '9:16' : '16:9',
     preset: typeof body.preset === 'string' ? body.preset.slice(0, 60) : null,
+    personGeneration: PERSON_GENERATION.has(body.personGeneration) ? body.personGeneration : 'dont_allow',
   };
 }

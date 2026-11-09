@@ -66,6 +66,7 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
   const [resolution, setResolution] = useState<'720p' | '1080p'>('720p');
   const [length, setLength] = useState(guest ? GUEST_MAX_LENGTH : 15);
   const [sound, setSound] = useState(true);
+  const [personGeneration, setPersonGeneration] = useState<'dont_allow' | 'allow_adult'>('dont_allow');
   const [narrationOn, setNarrationOn] = useState(true);
   const [narrationText, setNarrationText] = useState('');
   const [voice, setVoice] = useState('Kore');
@@ -277,6 +278,7 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
         aspectRatio,
         resolution: effectiveResolution,
         sound,
+        personGeneration: isAd ? 'dont_allow' : personGeneration,
         narration: narrationActive ? { text: narrationText.trim(), voice, style: speechStyle } : null,
         brandKitId: isAd && kitId ? kitId : null,
         useLogo: isAd && !!kit?.hasLogo && useLogo,
@@ -468,6 +470,19 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
           {sound ? 'On' : 'Off (cheaper)'}
         </button>
       </div>
+      {!isAd && (
+        <div className="setting-item">
+          <div className="setting-label">People</div>
+          <div className="setting-control">
+            <select className="setting-select" value={personGeneration}
+              onChange={e => setPersonGeneration(e.target.value as 'dont_allow' | 'allow_adult')}
+              aria-label="Whether Veo may include adult people">
+              <option value="dont_allow">No people</option>
+              <option value="allow_adult">Allow adult people</option>
+            </select>
+          </div>
+        </div>
+      )}
     </div>
   );
 
