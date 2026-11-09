@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as api from './api';
 import { AD_LANGUAGES } from './ad';
 import { prepareLogo } from './image';
 import { errorMessage } from '../utils';
+import { Modal } from './components/Modal';
 
 interface BrandKitModalProps {
   kits: api.BrandKit[];
@@ -19,10 +20,17 @@ export const BrandKitModal = ({ kits, onChange, onClose }: BrandKitModalProps) =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  // The kit list is read through a ref so a refresh in the background does not reset the form
+  // while the user is editing it.
+  const kitsRef = useRef(kits);
+  useEffect(() => {
+    kitsRef.current = kits;
+  }, [kits]);
+
   useEffect(() => {
     if (editingId === 'new') { setForm(EMPTY); setLogo(null); }
     else if (editingId) {
-      const k = kits.find(x => x.id === editingId);
+      const k = kitsRef.current.find(x => x.id === editingId);
       if (k) { setForm({ name: k.name, tone: k.tone, audience: k.audience, colors: k.colors, language: k.language }); setLogo(null); }
     }
     setError('');
@@ -77,13 +85,12 @@ export const BrandKitModal = ({ kits, onChange, onClose }: BrandKitModalProps) =
   const current = editingId && editingId !== 'new' ? kits.find(k => k.id === editingId) : null;
 
   return (
-    <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-content kit-modal" role="dialog" aria-modal="true" aria-label="Brand kits">
-        <button className="modal-close" onClick={onClose} aria-label="Close">&times;</button>
-        <h2 style={{ marginBottom: 6 }}>Brand kits</h2>
-        <p className="field-hint" style={{ marginTop: 0, marginBottom: 16 }}>
-          Save your logo, colours and tone once. Gemini writes every ad in your voice and the logo is added to the video.
-        </p>
+    <Modal
+      title="Brand kits"
+      subtitle="Save your logo, colours and tone once. Gemini writes every ad in your voice and the logo is added to the video."
+      onClose={onClose}
+      className="kit-modal"
+    >
 
         {editingId === null ? (
           <>
@@ -158,7 +165,6 @@ export const BrandKitModal = ({ kits, onChange, onClose }: BrandKitModalProps) =
           </div>
         )}
         {editingId === null && error && <div className="error-banner" role="alert" style={{ marginTop: 12 }}>{error}</div>}
-      </div>
-    </div>
+    </Modal>
   );
 };

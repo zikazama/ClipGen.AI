@@ -5,80 +5,17 @@ import { HttpError } from './errors.js';
 import * as veo from './veo.js';
 import { synthesizeSpeech } from './gemini.js';
 import { finalizeVideo } from './media.js';
-import {
-  MODELS, LENGTHS, GUEST_MODEL, GUEST_MAX_LENGTH, VOICES, IMAGE_MIMES, MAX_IMAGE_BYTES, LANGUAGES, PLATFORMS, SPEECH_STYLES,
-} from './config.js';
 import { estimateCost } from './pricing.js';
 import { getKit, readLogo } from './brand.js';
 import { guardGeneration } from './limits.js';
+import { parseImage, validate } from './validation.js';
 
 const LOCK_MS = 120_000;
+// The final step (download, ffmpeg master, upload) is the slow one, so it gets its own long lease.
+const FINALIZE_LOCK_MS = 15 * 60_000;
 const SIGNED_URL_TTL_MS = 60 * 60 * 1000;
 const jobs = () => db.collection('jobs');
 const clips = (uid) => db.collection('users').doc(uid).collection('clips');
-
-export function parseImage(img, label) {
-  if (!img) return null;
-  if (typeof img.imageBytes !== 'string' || !img.imageBytes.length) throw new HttpError(400, `Invalid ${label}.`);
-  if (!IMAGE_MIMES.has(img.mimeType)) throw new HttpError(400, `${label} must be PNG, JPEG or WebP.`);
-  if (img.imageBytes.length * 0.75 > MAX_IMAGE_BYTES) throw new HttpError(413, `${label} is too large (max 8 MB).`);
-  return { imageBytes: img.imageBytes, mimeType: img.mimeType };
-}
-
-function validate(body, user) {
-  const model = MODELS[body.model] ? body.model : null;
-  if (!model) throw new HttpError(400, 'Model not allowed.');
-
-  const prompt = typeof body.prompt === 'string' ? body.prompt.slice(0, 1800).trim() : '';
-  const image = parseImage(body.image, 'Start frame');
-  const lastFrame = parseImage(body.lastFrame, 'End frame');
-  if (!prompt && !image) throw new HttpError(400, 'Prompt or start frame required.');
-  if (lastFrame && !image) throw new HttpError(400, 'End frame requires a start frame.');
-
-  const length = Number(body.length);
-  const plan = LENGTHS[length];
-  if (!plan) throw new HttpError(400, 'Unsupported length.');
-  if (user?.guest && (model !== GUEST_MODEL || length > GUEST_MAX_LENGTH)) {
-    throw new HttpError(403, 'Guests can make one Fast draft up to 8 seconds a day. Sign in to unlock HQ and longer clips.');
-  }
-  if (lastFrame && plan.base !== 8) throw new HttpError(400, 'An end frame needs a clip length of 8s or more.');
-
-  // Veo 3.1: 1080p and first/last-frame interpolation only support 8s base clips.
-  const resolution = body.resolution === '1080p' && plan.base === 8 ? '1080p' : '720p';
-
-  let narration = null;
-  if (body.narration && typeof body.narration.text === 'string' && body.narration.text.trim()) {
-    narration = {
-      text: body.narration.text.slice(0, 600).trim(),
-      voice: VOICES.has(body.narration.voice) ? body.narration.voice : 'Kore',
-      style: SPEECH_STYLES[body.narration.style] !== undefined ? body.narration.style : 'neutral',
-    };
-  }
-
-  // Optional product-ad metadata produced by the creative director (stored with the clip).
-  let ad = null;
-  if (body.ad && typeof body.ad === 'object') {
-    const str = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
-    ad = {
-      brief: str(body.ad.brief, 400),
-      caption: str(body.ad.caption, 300),
-      hashtags: (Array.isArray(body.ad.hashtags) ? body.ad.hashtags : []).map((h) => str(h, 30)).filter(Boolean).slice(0, 8),
-      language: LANGUAGES[body.ad.language] ? body.ad.language : null,
-      platform: PLATFORMS.has(body.ad.platform) ? body.ad.platform : null,
-      directed: body.ad.directed === true,
-    };
-  }
-
-  return {
-    model,
-    prompt: prompt || 'A high quality cinematic video',
-    image, lastFrame, length, plan, resolution, narration, ad, sound: body.sound !== false,
-    brandKitId: typeof body.brandKitId === 'string' ? body.brandKitId.slice(0, 64) : null,
-    useLogo: body.useLogo === true,
-    aspectRatio: body.aspectRatio === '9:16' ? '9:16' : '16:9',
-    preset: typeof body.preset === 'string' ? body.preset.slice(0, 60) : null,
-  };
-}
 
 export async function createJob(req) {
   const v = validate(req.body || {}, req.user);
@@ -143,7 +80,8 @@ async function acquire(id) {
     if (!snap.exists) return null;
     const job = snap.data();
     if (job.status !== 'running' || job.lockUntil > Date.now()) return { job, locked: true };
-    tx.update(ref, { lockUntil: Date.now() + LOCK_MS });
+    const lease = job.stage === 'finalize' || job.stage === 'finalizing' ? FINALIZE_LOCK_MS : LOCK_MS;
+    tx.update(ref, { lockUntil: Date.now() + lease });
     return { job, locked: false };
   });
 }
@@ -202,25 +140,40 @@ export async function advanceJob(id, uid) {
   if (held && !held.locked) {
     const { job } = held;
     try {
-      const op = await veo.getOperation(job.operation);
-      if (!op.done) {
-        await jobs().doc(id).update({ lockUntil: 0 });
-      } else if (op.error) {
-        await fail(id, op.error);
-      } else if (job.extIndex < job.params.extensions) {
-        const next = job.extIndex + 1;
-        const operation = await veo.startVideo({
-          model: job.params.model,
-          prompt: `${job.params.prompt} Continue the scene naturally and seamlessly.`.slice(0, 2000),
-          video: op.uri,
-          resolution: job.params.resolution,
-          sound: job.params.sound !== false,
-          outputPrefix: `jobs/${id}/s${next}/`,
-        });
-        await jobs().doc(id).update({ stage: 'extend', extIndex: next, operation, currentUri: op.uri, lockUntil: 0 });
+      if (job.stage === 'finalize' || job.stage === 'finalizing') {
+        // The master step already ran when the stage reached "finalize". If the clip record
+        // exists the work is done; if it does not, the step was interrupted and is retried.
+        const done = await clips(job.uid).doc(id).get();
+        if (done.exists) {
+          await jobs().doc(id).update({ status: 'done', stage: 'done', clipId: id, lockUntil: 0 });
+        } else {
+          await finalize(id, job);
+        }
       } else {
-        await jobs().doc(id).update({ stage: 'finalize', currentUri: op.uri });
-        await finalize(id, { ...job, stage: 'finalize', currentUri: op.uri });
+        const op = await veo.getOperation(job.operation);
+        if (!op.done) {
+          await jobs().doc(id).update({ lockUntil: 0 });
+        } else if (op.error) {
+          await fail(id, op.error);
+        } else if (job.extIndex < job.params.extensions) {
+          const next = job.extIndex + 1;
+          const operation = await veo.startVideo({
+            model: job.params.model,
+            prompt: `${job.params.prompt} Continue the scene naturally and seamlessly.`.slice(0, 2000),
+            video: op.uri,
+            resolution: job.params.resolution,
+            sound: job.params.sound !== false,
+            outputPrefix: `jobs/${id}/s${next}/`,
+          });
+          await jobs().doc(id).update({ stage: 'extend', extIndex: next, operation, currentUri: op.uri, lockUntil: 0 });
+        } else {
+          await jobs().doc(id).update({
+            stage: 'finalizing',
+            currentUri: op.uri,
+            lockUntil: Date.now() + FINALIZE_LOCK_MS,
+          });
+          await finalize(id, { ...job, stage: 'finalizing', currentUri: op.uri });
+        }
       }
     } catch (err) {
       console.error('advance error:', id, err);
@@ -229,7 +182,9 @@ export async function advanceJob(id, uid) {
   }
 
   const snap = await jobs().doc(id).get();
-  return view(id, snap.data());
+  const data = snap.data();
+  if (!data) throw new HttpError(404, 'Job not found.');
+  return view(id, data);
 }
 
 async function clipView(id, c) {

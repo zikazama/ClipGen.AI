@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import { continueAsGuest, onUser, signOut, type User } from './src/firebase';
 import { errorMessage } from './utils';
 import { Landing } from './src/Landing';
 import { Studio } from './src/Studio';
 import { AuthModal } from './src/AuthModal';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 
 type View = 'landing' | 'studio';
 const viewFromHash = (): View => (window.location.hash === '#studio' ? 'studio' : 'landing');
@@ -67,4 +68,8 @@ const App = () => {
   );
 };
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(<App />);
+ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
+);

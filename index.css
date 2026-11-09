@@ -1332,3 +1332,71 @@ html, body, #root {
 .compare-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 @media (max-width: 900px) { .offer-grid { grid-template-columns: 1fr; } .compare-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 520px) { .econ-head, .econ-row { grid-template-columns: 1.6fr .9fr .9fr; font-size: 12px; padding: 8px 10px; } .compare-grid { grid-template-columns: 1fr; } }
+
+/* ==========================================================================
+   Controls that used to be divs and are real buttons now
+   ========================================================================== */
+.setting-control {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-family: inherit;
+}
+
+.model-selector {
+  font-family: inherit;
+}
+
+.model-dropdown-item {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: none;
+  font-family: inherit;
+  text-align: left;
+}
+
+.model-dropdown-item.selected {
+  background-color: #2a2a2a;
+}
+
+.model-dropdown-item:disabled {
+  cursor: not-allowed;
+}
+
+.history-thumbnail {
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   Dialogs
+   ========================================================================== */
+.modal-title {
+  margin: 0 0 6px;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.modal-subtitle {
+  margin: 0 0 16px;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: #fff;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid #666;
+  outline-offset: 2px;
+}

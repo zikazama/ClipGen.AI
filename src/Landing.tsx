@@ -1,4 +1,3 @@
-import React from 'react';
 import { UnitEconomics } from './PricingPanel';
 import { AD_LANGUAGES } from './ad';
 import { FAST_AD_COST, formatUsd } from './pricing';

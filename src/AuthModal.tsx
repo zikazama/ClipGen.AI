@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   authErrorMessage, continueAsGuest, signInWithEmail, signInWithGoogle, signUpWithEmail,
 } from './firebase';
+import { Modal } from './components/Modal';
 
 interface AuthModalProps {
   /** When true the modal offers the "continue as guest" shortcut (landing page). */
@@ -36,14 +37,12 @@ export const AuthModal = ({ allowGuest = false, onClose, onDone }: AuthModalProp
   };
 
   return (
-    <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="modal-content" style={{ maxWidth: 400 }} role="dialog" aria-modal="true" aria-label="Sign in">
-        <button className="modal-close" onClick={onClose} aria-label="Close">&times;</button>
-        <h2 style={{ marginBottom: 8 }}>{mode === 'signin' ? 'Welcome back' : 'Create an account'}</h2>
-        <p style={{ color: '#a1a1aa', fontSize: 14, marginBottom: 20 }}>
-          {mode === 'signin' ? 'Sign in to keep your clips across devices.' : 'Free to start. Higher daily limits than guests.'}
-        </p>
-
+    <Modal
+      title={mode === 'signin' ? 'Welcome back' : 'Create an account'}
+      subtitle={mode === 'signin' ? 'Sign in to keep your clips across devices.' : 'Free to start. Higher daily limits than guests.'}
+      onClose={onClose}
+      maxWidth={400}
+    >
         <div className="auth-form">
           <button className="google-btn" onClick={() => run(signInWithGoogle)} disabled={busy}>
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
@@ -84,10 +83,9 @@ export const AuthModal = ({ allowGuest = false, onClose, onDone }: AuthModalProp
 
         <div className="auth-footer">
           {mode === 'signin'
-            ? <>Don't have an account? <span onClick={() => setMode('signup')}>Sign up</span></>
-            : <>Already have an account? <span onClick={() => setMode('signin')}>Sign in</span></>}
+            ? <>Don't have an account? <button type="button" className="link-button" onClick={() => setMode('signup')}>Sign up</button></>
+            : <>Already have an account? <button type="button" className="link-button" onClick={() => setMode('signin')}>Sign in</button></>}
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 };
