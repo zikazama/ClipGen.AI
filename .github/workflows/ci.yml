@@ -13,11 +13,14 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: npm ci
+
+      - name: Install backend dependencies
+        run: npm ci --prefix server
 
       - name: Type check
         run: npm run typecheck
@@ -30,3 +33,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Backend smoke test
+        run: node --input-type=module -e "import('./server/lib/firebase.js').then(() => console.log('backend imports ok')).catch((e) => { console.error(e.message); process.exit(1); })"

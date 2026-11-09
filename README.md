@@ -161,7 +161,7 @@ scripts/deploy.sh      Check, deploy the API to Cloud Run and the front end to F
 
 ## Run and deploy
 
-Prerequisites: Node.js 20+, a Google Cloud project with billing, `gcloud` and `firebase` CLIs.
+Prerequisites: Node.js 22+ (CI and the container run Node 24), a Google Cloud project with billing, `gcloud` and `firebase` CLIs.
 
 ```bash
 npm install

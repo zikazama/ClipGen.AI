@@ -2,29 +2,12 @@ import crypto from 'node:crypto';
 import { db } from './firebase.js';
 import { HttpError } from './errors.js';
 import { LIMITS } from './config.js';
+import { secondsPerDayFor, toMicroUsd, wouldExceed, windowBucket } from './limit-rules.js';
+
+export { secondsPerDayFor, toMicroUsd, wouldExceed, windowBucket };
 
 const HOUR = 3600_000;
 const DAY = 86_400_000;
-
-/** The counter window a timestamp belongs to. Pure. */
-export function windowBucket(now, windowMs) {
-  return Math.floor(now / windowMs);
-}
-
-/** Whether adding `amount` to `used` would go over `limit`. Pure. */
-export function wouldExceed(used, amount, limit) {
-  return used + amount > limit;
-}
-
-/** The daily video seconds a user may spend. Guests get the trial limit. Pure. */
-export function secondsPerDayFor(user, limits) {
-  return user?.guest ? limits.guestSecondsPerDay : limits.userSecondsPerDay;
-}
-
-/** Converts a USD amount to integer micro dollars, so the counter stays an integer. Pure. */
-export function toMicroUsd(usd) {
-  return Math.ceil(usd * 1e6);
-}
 
 /**
  * Atomically adds `amount` to a windowed counter. Returns false (and changes nothing)

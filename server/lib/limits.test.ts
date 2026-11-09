@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { secondsPerDayFor, toMicroUsd, wouldExceed, windowBucket } from './limits.js';
+import { secondsPerDayFor, toMicroUsd, wouldExceed, windowBucket } from './limit-rules.js';
 
 const HOUR = 3600_000;
 const DAY = 86_400_000;
