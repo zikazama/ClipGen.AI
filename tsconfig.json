@@ -24,6 +24,18 @@
       ]
     },
     "allowImportingTsExtensions": true,
-    "noEmit": true
-  }
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "checkJs": false
+  },
+  "include": [
+    "src",
+    "index.tsx",
+    "utils.ts",
+    "vite.config.ts",
+    "vitest.config.ts"
+  ]
 }

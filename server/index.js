@@ -5,7 +5,8 @@ import { HttpError, publicError } from './lib/errors.js';
 import { requireUser } from './lib/firebase.js';
 import { guardAi } from './lib/limits.js';
 import { enhancePrompt, synthesizeSpeech, directBrief } from './lib/gemini.js';
-import { createJob, advanceJob, listClips, getClip, deleteClip, parseImage } from './lib/pipeline.js';
+import { createJob, advanceJob, listClips, getClip, deleteClip } from './lib/pipeline.js';
+import { parseImage } from './lib/validation.js';
 import { listKits, getKit, createKit, updateKit, setLogo, deleteKit } from './lib/brand.js';
 import { VOICES, LANGUAGES, LENGTHS, PLATFORMS, SPEECH_STYLES } from './lib/config.js';
 

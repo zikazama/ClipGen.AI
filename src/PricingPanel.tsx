@@ -1,7 +1,7 @@
-import React from 'react';
 import {
   UNIT_ROWS, PLAN_OFFERS, FAST_AD_COST, HQ_AD_COST, formatUsd, formatPct, GEMINI_USD_PER_CLIP,
 } from './pricing';
+import { Modal } from './components/Modal';
 
 /** Unit economics of one 20-second ad and how ads are sold. Numbers come from src/pricing.ts. */
 export const UnitEconomics = () => (
@@ -45,12 +45,12 @@ export const UnitEconomics = () => (
 );
 
 export const PricingModal = ({ onClose }: { onClose: () => void }) => (
-  <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-    <div className="modal-content pricing-modal" role="dialog" aria-modal="true" aria-label="Unit economics">
-      <button className="modal-close" onClick={onClose} aria-label="Close">&times;</button>
-      <h2 style={{ marginBottom: 6 }}>What a video costs</h2>
-      <p className="field-hint" style={{ marginTop: 0, marginBottom: 16 }}>Transparent unit economics for one 20-second ad.</p>
-      <UnitEconomics />
-    </div>
-  </div>
+  <Modal
+    title="What a video costs"
+    subtitle="Transparent unit economics for one 20-second ad."
+    onClose={onClose}
+    className="pricing-modal"
+  >
+    <UnitEconomics />
+  </Modal>
 );

@@ -3,12 +3,22 @@
   "private": true,
   "type": "module",
   "main": "index.js",
-  "engines": { "node": "20" },
+  "engines": {
+    "node": "20"
+  },
   "dependencies": {
-    "@google-cloud/storage": "^7.14.0",
+    "@google-cloud/storage": "^8.4.0",
     "@google/genai": "^2.30.0",
     "express": "^4.21.2",
-    "firebase-admin": "^13.0.2",
+    "firebase-admin": "^14.5.0",
     "google-auth-library": "^11.3.1"
+  },
+  "overrides": {
+    "body-parser": "^1.20.9",
+    "uuid": "^11.1.1",
+    "minimatch": "^11.0.5",
+    "glob": "^14.0.4",
+    "rimraf": "^6.1.4",
+    "gcp-metadata": "^9.2.3"
   }
 }

@@ -76,7 +76,7 @@ Firestore lease, so concurrent polls are safe and no background compute is neede
 
 1. **Base clip**: Veo generates 4/6/8 s (from the product photo or start/end frames) into Cloud Storage.
 2. **Extend x N**: for 15 s and 20 s, Veo extends the previous clip by 7 s per step (the output is the merged video).
-3. **Master**: ffmpeg trims to the length, encodes H.264/AAC, mixes in the Gemini narration (ducking Veo's own sound) and overlays the brand logo.
+3. **Master**: ffmpeg trims to the length, encodes H.264/AAC, mixes in the Gemini narration (ducking Veo's own sound) and overlays the brand logo. This step takes its own 15 minute lease, and the clip record is the proof that it finished: if a request dies halfway, the next poll retries instead of finishing twice.
 4. **Done**: the MP4 is saved, a clip record (with brief, script, caption, cost) is written to Firestore and the UI gets a signed URL.
 
 ### API
@@ -140,6 +140,7 @@ touches Firestore directly).
 index.tsx              App shell: auth state, landing ↔ studio
 src/Landing.tsx        Landing page (positioning, how it works, unit economics)
 src/Studio.tsx         Studio: product-ad mode, free-form mode, progress, library
+src/components/        Shared dialog (Modal), error boundary
 src/BrandKitModal.tsx  Brand kit editor (logo, colours, tone)
 src/PricingPanel.tsx   Unit economics table and offers
 src/AuthModal.tsx      Google / email / guest sign-in
@@ -151,9 +152,11 @@ src/presets.ts         The 33 presets
 src/image.ts           Photo crop/downscale and logo preparation
 utils.ts               Audio helpers (PCM decode, shared AudioContext)
 server/index.js        Express routes
-server/lib/            pipeline (job state machine), veo, gemini (director, TTS), brand, media (ffmpeg), limits, pricing, firebase, config
+server/lib/            pipeline (job state machine), veo, gemini (director, TTS), brand, media (ffmpeg), limits, pricing, firebase, validation, config
 firebase.json          Hosting (rewrites /api to Cloud Run) + Firestore rules
-Dockerfile             Builds the frontend, installs ffmpeg, runs the server
+Dockerfile             Builds the frontend, installs ffmpeg, runs the server as a non-root user
+scripts/deploy.sh      Check, deploy the API to Cloud Run and the front end to Firebase Hosting
+.github/workflows/     CI: type check, lint, tests, build
 ```
 
 ## Run and deploy
@@ -163,7 +166,7 @@ Prerequisites: Node.js 20+, a Google Cloud project with billing, `gcloud` and `f
 ```bash
 npm install
 npm run dev        # Vite dev server on http://127.0.0.1:3000, proxying /api to the deployed Cloud Run service
-npm test           # vitest unit tests
+npm run check      # type check + lint + unit tests, exactly what CI runs
 npm run build
 ```
 
@@ -184,10 +187,20 @@ gcloud storage buckets create gs://clipgen-<PROJECT_ID>-media --location=us-cent
 Deploy:
 
 ```bash
+./scripts/deploy.sh
+# or by hand:
 gcloud run deploy clipgen --source . --region us-central1 --allow-unauthenticated \
-  --cpu 2 --memory 2Gi --timeout 300 --max-instances 3
+  --cpu 2 --memory 2Gi --timeout 600 --max-instances 3
 firebase deploy --only firestore:rules,hosting
 ```
+
+The request timeout is 600 seconds because the master step (download the clip, run ffmpeg, upload the MP4) runs inside
+the request that advances the job.
+
+Jobs advance while the browser polls `GET /api/jobs/:id`, so a job stops moving when the browser is closed. The next
+step is a background worker: a protected endpoint (a shared secret or an OIDC token from Cloud Scheduler) that advances
+the running jobs once a minute, so a 20 s ad finishes even when the user walks away. Until that exists, the job can be
+resumed from the studio: it is stored in the browser and picked up again on the next visit.
 
 To use another project, change the `PROJECT_ID` default in `server/lib/config.js` (or set `GOOGLE_CLOUD_PROJECT` /
 `MEDIA_BUCKET`) and the Firebase web config in `src/firebase.ts`. In the Firebase console enable the **Google**

@@ -14,4 +14,10 @@ RUN cd server && npm install --omit=dev
 COPY server server
 COPY --from=build /app/dist dist
 ENV NODE_ENV=production
+ENV PORT=8080
+# The container runs as an unprivileged user; ffmpeg only needs to write to /tmp.
+USER node
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 CMD ["node", "server/index.js"]

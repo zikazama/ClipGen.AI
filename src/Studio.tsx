@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from './firebase';
 import * as api from './api';
 import { PRESETS, PRESET_CATEGORIES, composePrompt, findPreset } from './presets';
@@ -135,6 +135,12 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
   }, [length, isAd, endFrame]);
 
   // Veo letterboxes images that do not match the video ratio, so re-crop uploads when the ratio changes.
+  // The frames are read through a ref: this effect must only react to a ratio change, never to a new frame.
+  const framesRef = useRef({ startFrame, endFrame });
+  useEffect(() => {
+    framesRef.current = { startFrame, endFrame };
+  }, [startFrame, endFrame]);
+
   useEffect(() => {
     let stale = false;
     const redo = async (frame: Frame | null, set: (f: Frame) => void) => {
@@ -146,8 +152,8 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
         set(next);
       } catch { /* keep the previous crop */ }
     };
-    void redo(startFrame, setStartFrame);
-    void redo(endFrame, setEndFrame);
+    void redo(framesRef.current.startFrame, setStartFrame);
+    void redo(framesRef.current.endFrame, setEndFrame);
     return () => { stale = true; };
   }, [aspectRatio]);
 
@@ -440,22 +446,27 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
       {!isAd && (
         <div className="setting-item">
           <div className="setting-label">Aspect ratio</div>
-          <div className="setting-control" onClick={() => setAspectRatio(a => (a === '16:9' ? '9:16' : '16:9'))}>{aspectRatio}</div>
+          <button type="button" className="setting-control" aria-label={`Aspect ratio ${aspectRatio}, click to change`}
+            onClick={() => setAspectRatio(a => (a === '16:9' ? '9:16' : '16:9'))}>
+            {aspectRatio}
+          </button>
         </div>
       )}
       <div className="setting-item">
         <div className="setting-label">Resolution</div>
-        <div className="setting-control" style={resolutionLocked ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}
+        <button type="button" className="setting-control" style={resolutionLocked ? { opacity: 0.6, cursor: 'not-allowed' } : undefined}
           title={resolutionLocked ? '1080p needs a clip length of 8s or more' : 'Click to change'}
+          disabled={resolutionLocked}
           onClick={() => { if (!resolutionLocked) setResolution(r => (r === '720p' ? '1080p' : '720p')); }}>
           {effectiveResolution}
-        </div>
+        </button>
       </div>
       <div className="setting-item">
         <div className="setting-label">Veo sound</div>
-        <div className="setting-control" title="Video-only is billed at a lower rate" onClick={() => setSound(s => !s)}>
+        <button type="button" className="setting-control" title="Video-only is billed at a lower rate"
+          aria-pressed={sound} onClick={() => setSound(s => !s)}>
           {sound ? 'On' : 'Off (cheaper)'}
-        </div>
+        </button>
       </div>
     </div>
   );
@@ -503,23 +514,25 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
           <div className="panel-title-row">
             <h1>Studio</h1>
             <div className="model-dropdown-container" ref={modelRef}>
-              <div className={`model-selector ${modelOpen ? 'active' : ''}`} onClick={() => setModelOpen(o => !o)} role="button" tabIndex={0}
-                onKeyDown={e => { if (e.key === 'Enter') setModelOpen(o => !o); }}>
+              <button type="button" className={`model-selector ${modelOpen ? 'active' : ''}`}
+                onClick={() => setModelOpen(o => !o)} aria-haspopup="listbox" aria-expanded={modelOpen}
+                aria-label={`Model: ${model.name}`}>
                 {model.name}
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"
                   style={{ transform: modelOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9" /></svg>
-              </div>
+              </button>
               {modelOpen && (
-                <div className="model-dropdown-menu">
+                <div className="model-dropdown-menu" role="listbox" aria-label="Video model">
                   {MODELS.map(m => {
                     const locked = guest && m.id !== MODELS[0].id;
                     return (
-                      <div key={m.id} className={`model-dropdown-item ${model.id === m.id ? 'selected' : ''}`}
+                      <button type="button" key={m.id} role="option" aria-selected={model.id === m.id} disabled={locked}
+                        className={`model-dropdown-item ${model.id === m.id ? 'selected' : ''}`}
                         style={locked ? { opacity: 0.45, cursor: 'not-allowed' } : undefined}
                         onClick={() => { if (!locked) { setModel(m); setModelOpen(false); } }}>
-                        <div className="model-item-name">{m.name}{locked ? ' · sign in' : ''}</div>
-                        <div className="model-item-desc">{m.description}</div>
-                      </div>
+                        <span className="model-item-name">{m.name}{locked ? ' · sign in' : ''}</span>
+                        <span className="model-item-desc">{m.description}</span>
+                      </button>
                     );
                   })}
                 </div>
@@ -739,10 +752,11 @@ export const Studio = ({ user, onOpenAuth, onSignOut, onHome }: StudioProps) => 
                 <div className="empty-state" style={{ gridColumn: '1/-1', marginTop: 40 }}><p>No clips yet.</p></div>
               ) : library.map(c => (
                 <div key={c.id} className="history-card">
-                  <div className="history-thumbnail" onClick={() => { setResult(c); setTab('canvas'); }}>
+                  <button type="button" className="history-thumbnail" onClick={() => { setResult(c); setTab('canvas'); }}
+                    aria-label={`Show the clip for ${c.ad?.brief || c.prompt}`}>
                     <video src={c.url} preload="metadata" muted style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       onMouseOver={e => e.currentTarget.play()} onMouseOut={e => e.currentTarget.pause()} />
-                  </div>
+                  </button>
                   <div className="history-info">
                     <div className="history-prompt">{c.ad?.brief || c.prompt}</div>
                     <div className="history-date">

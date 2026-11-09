@@ -80,7 +80,7 @@ describe('client and server price models stay in sync', () => {
         for (const length of [4, 6, 8, 15, 20]) {
           for (const sound of [true, false]) {
             const c = estimateCost({ model, resolution, length, narration: true, director: true, sound });
-            const s = server.estimateCost({ model, resolution, plan: LENGTHS[length], narration: true, director: true, sound });
+            const s = server.estimateCost({ model, resolution, plan: LENGTHS[length as keyof typeof LENGTHS], narration: true, director: true, sound });
             expect(c.totalUsd).toBeCloseTo(s.totalUsd, 8);
           }
         }

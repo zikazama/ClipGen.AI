@@ -1,5 +1,5 @@
-import path from 'path';
-import { defineConfig } from 'vitest/config';
+import { fileURLToPath, URL } from 'node:url';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
@@ -14,14 +14,18 @@ export default defineConfig({
     },
   },
   plugins: [react()],
-  test: {
-    environment: 'node',
-    include: ['**/*.test.ts'],
-    exclude: ['node_modules/**', 'dist/**'],
-  },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, '.'),
+      '@': fileURLToPath(new URL('.', import.meta.url)),
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-firebase': ['firebase/app', 'firebase/auth'],
+        },
+      },
     },
   },
 });
